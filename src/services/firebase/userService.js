@@ -9,6 +9,7 @@
 // before the person's first login.
 import { getAllDocs, getOneDoc, createDoc, updateDocById } from './firestoreHelpers';
 import { COLLECTIONS } from './firestorePaths';
+import { createUserAccount, deleteJustCreatedUserAccount, endProvisioningSession, generateTemporaryPassword } from './authService';
 
 // getOneDoc/getAllDocs return a generic `id` field; map it to `userId` here
 // so callers see the same shape as the mock repository.
@@ -36,14 +37,58 @@ export async function getUserById(userId) {
 }
 
 // A1: creation authority (SUPER_ADMIN only) is enforced by the caller
-// (userRepository / UI), not here. The document ID is set to `firebaseUid`
-// when provided (so the person can log in immediately), or a generated ID
-// otherwise (for a profile provisioned ahead of the person's first login,
-// to be linked once they authenticate for the first time).
-export async function createUser({ firebaseUid, name, email, role, department }) {
+// (userRepository / UI), not here.
+//
+// ROOT CAUSE FIX: this previously accepted a `firebaseUid` parameter that
+// nothing ever actually supplied, so profiles were created with
+// firebaseUid: null and no matching Authentication account -- the new
+// user could never log in. The correct order is:
+//
+//   1. Create the REAL Firebase Authentication account (on the isolated
+//      provisioning auth instance -- see authService.createUserAccount /
+//      config.getProvisioningAuth -- so the currently signed-in Super
+//      Admin's own session is never replaced).
+//   2. Use the UID Firebase Authentication actually returns.
+//   3. Create users/{thatRealUid} in Firestore.
+//
+// The generated temporary password is returned ONCE so the caller
+// (UsersPage) can show it to Super Admin to pass on securely -- it is
+// never written to Firestore or logged.
+export async function createUser({ name, email, role, department }) {
+  const temporaryPassword = generateTemporaryPassword();
+
+  let authUser;
+  try {
+    authUser = await createUserAccount(email, temporaryPassword, name);
+  } catch (err) {
+    await endProvisioningSession().catch(() => {});
+    throw new Error(`Could not create the Authentication account: ${err.message}`);
+  }
+
+  const firebaseUid = authUser.uid;
   const now = new Date().toISOString();
-  const data = { firebaseUid: firebaseUid || null, name, email, role, department: department || '', status: 'ACTIVE', createdAt: now, updatedAt: now };
-  return toUser(await createDoc(COLLECTIONS.USERS, data, firebaseUid));
+  const data = { firebaseUid, name, email, role, department: department || '', status: 'ACTIVE', createdAt: now, updatedAt: now };
+
+  try {
+    const created = toUser(await createDoc(COLLECTIONS.USERS, data, firebaseUid));
+    await endProvisioningSession();
+    return { ...created, temporaryPassword };
+  } catch (err) {
+    // Requirement #3: do not silently report success. The Authentication
+    // account now exists with no matching profile -- roll it back rather
+    // than leave an inconsistent orphan.
+    try {
+      await deleteJustCreatedUserAccount();
+      await endProvisioningSession();
+      throw new Error(`The account could not be fully created and was automatically rolled back: ${err.message}. Please try again.`);
+    } catch (rollbackErr) {
+      await endProvisioningSession().catch(() => {});
+      throw new Error(
+        `CRITICAL: an Authentication account (UID: ${firebaseUid}) was created but the Firestore profile failed, and automatic rollback ALSO failed (${rollbackErr.message}). ` +
+        `This account must be manually deleted from the Firebase Console -> Authentication before "${email}" can be provisioned again. Original error: ${err.message}`
+      );
+    }
+  }
 }
 
 export async function updateUser(userId, patch) {

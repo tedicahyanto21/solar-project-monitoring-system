@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
   Box, Stack, Typography, Paper, Table, TableHead, TableRow, TableCell, TableBody, Chip,
-  Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, MenuItem, Alert,
+  Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, MenuItem, Alert, IconButton, Tooltip,
 } from '@mui/material';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { getUsers, createUser, updateUser, setUserStatus } from '../../services/repositories/userRepository';
 import { ROLE_LABELS, ALL_ROLES } from '../../constants/roles';
 import { useAuth } from '../../context/AuthContext';
@@ -21,6 +22,10 @@ export default function UsersPage() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  // Shown once, right after a Firebase Authentication account + Firestore
+  // profile are both created successfully -- never persisted anywhere.
+  const [newCredentials, setNewCredentials] = useState(null);
 
   function load() {
     getUsers().then(setUsers);
@@ -47,16 +52,26 @@ export default function UsersPage() {
     if (!canManage) return;
     if (!form.name.trim() || !form.email.trim()) return;
     setError('');
+    setSubmitting(true);
     try {
       if (editingId) {
         await updateUser(editingId, form);
       } else {
-        await createUser(form);
+        // Creates a real Firebase Authentication account first, then the
+        // Firestore profile at users/{thatRealUid} -- see
+        // services/firebase/userService.js. Super Admin's own session is
+        // untouched throughout (isolated provisioning app instance).
+        const result = await createUser(form);
+        if (result?.temporaryPassword) {
+          setNewCredentials({ email: form.email, temporaryPassword: result.temporaryPassword });
+        }
       }
       setOpen(false);
       load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -140,8 +155,34 @@ export default function UsersPage() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit}>{editingId ? 'Save Changes' : 'Create'}</Button>
+          <Button onClick={() => setOpen(false)} disabled={submitting}>Cancel</Button>
+          <Button variant="contained" onClick={handleSubmit} disabled={submitting}>
+            {submitting ? 'Saving\u2026' : editingId ? 'Save Changes' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!newCredentials} onClose={() => setNewCredentials(null)} fullWidth maxWidth="xs">
+        <DialogTitle>User Created</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This temporary password is shown once and is not stored anywhere. Copy it now and
+            share it with {newCredentials?.email} through a secure channel.
+          </Alert>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+            <TextField
+              label="Temporary Password" value={newCredentials?.temporaryPassword || ''}
+              fullWidth slotProps={{ input: { readOnly: true } }}
+            />
+            <Tooltip title="Copy">
+              <IconButton onClick={() => navigator.clipboard?.writeText(newCredentials?.temporaryPassword || '')}>
+                <ContentCopyRoundedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button variant="contained" onClick={() => setNewCredentials(null)}>Done</Button>
         </DialogActions>
       </Dialog>
     </Stack>

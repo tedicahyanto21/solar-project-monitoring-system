@@ -56,5 +56,35 @@ if (isLocalMode) {
   console.log('Running in LOCAL MODE');
 }
 
+// --- Secondary app instance for User Provisioning ---------------------------
+// Firebase's client Auth SDK signs the CURRENT app instance in as whichever
+// user was just created/signed-in on it. If Super Admin used the PRIMARY
+// `auth` above to call createUserWithEmailAndPassword() for a new user,
+// Super Admin's own session would be silently replaced by the new user's
+// session -- a well-documented Firebase client SDK behavior, not a bug.
+//
+// The standard, backend-free fix: run user creation on a SECOND, isolated
+// FirebaseApp instance (same project config, different app name). Each
+// FirebaseApp has its own independent Auth state, so creating a user there
+// never touches the PRIMARY app's current session. No Admin SDK or
+// privileged credentials are involved -- this still uses the same public
+// client config already in `.env`. See services/firebase/authService.js
+// (createUserAccount) for where this is actually used.
+//
+// The secondary app is created lazily (only when a user is actually being
+// provisioned) and is a distinct, guarded code path from `app`/`auth` above
+// so LOCAL MODE and normal login/logout are entirely unaffected.
+let provisioningApp = null;
+export function getProvisioningAuth() {
+  if (isLocalMode) {
+    throw new Error('User provisioning against Firebase Authentication is not available in LOCAL MODE.');
+  }
+  if (!provisioningApp) {
+    const name = 'spms-user-provisioning';
+    provisioningApp = getApps().find((a) => a.name === name) || initializeApp(firebaseConfig, name);
+  }
+  return getAuth(provisioningApp);
+}
+
 export { auth, db, storage };
 export default app;
