@@ -440,61 +440,40 @@ export function createPaymentProjection(projectId, projection) {
   return record;
 }
 
+import { checkDuplicateTransaction as sharedCheckDuplicate } from '../services/duplicateDetection';
+
 export function getCostTransactions(projectId) {
   return store.get(projectId)?.costTransactions ?? [];
 }
 
-function normalizeRef(value) {
-  return (value ?? '').toString().trim().toLowerCase();
-}
-
-// B8/B9: layered duplicate detection. Returns { level: 'STRONG'|'POSSIBLE'|null, reasons: [...] }
-// so the UI can show a human-readable explanation, not just an opaque flag.
+// B8/B9: layered duplicate detection -- logic itself lives in
+// services/duplicateDetection.js (shared with the Firestore backend, see
+// FT-5→FT-8 consolidation Part D); this just supplies the mock store's
+// current transaction list.
 export function checkDuplicateTransaction(projectId, candidate) {
   const ops = store.get(projectId);
   if (!ops) return { level: null, reasons: [] };
-  const candidateRef = normalizeRef(candidate.referenceNumber) || normalizeRef(candidate.invoiceNumber);
-
-  // Layer 1: strong reference match (invoice/reference number, within project).
-  if (candidateRef) {
-    const refMatch = ops.costTransactions.find((t) => {
-      if (t.status === 'VOID') return false;
-      const ref = normalizeRef(t.referenceNumber) || normalizeRef(t.invoiceNumber);
-      return ref && ref === candidateRef;
-    });
-    if (refMatch) {
-      return { level: 'STRONG', reasons: [`Matches existing transaction ${refMatch.transactionId} on the same Invoice/Reference Number ("${refMatch.referenceNumber || refMatch.invoiceNumber}").`] };
-    }
-  }
-
-  // Layer 2: exact business fingerprint (project + date + amount + category + reference).
-  const fingerprint = [projectId, candidate.transactionDate, Number(candidate.amount), normalizeRef(candidate.category), candidateRef].join('|');
-  const fpMatch = ops.costTransactions.find((t) => {
-    if (t.status === 'VOID') return false;
-    const tFp = [projectId, t.transactionDate, Number(t.amount), normalizeRef(t.category), normalizeRef(t.referenceNumber) || normalizeRef(t.invoiceNumber)].join('|');
-    return tFp === fingerprint;
-  });
-  if (fpMatch) {
-    return { level: 'STRONG', reasons: [`Identical Project, Date, Amount, Category, and Reference as existing transaction ${fpMatch.transactionId}.`] };
-  }
-
-  // Layer 3: possible duplicate (same project/amount, nearby date, similar category).
-  const possible = ops.costTransactions.find((t) => {
-    if (t.status === 'VOID') return false;
-    if (Number(t.amount) !== Number(candidate.amount)) return false;
-    const dayDiff = Math.abs(new Date(t.transactionDate) - new Date(candidate.transactionDate)) / 86400000;
-    return dayDiff <= 3 && normalizeRef(t.category) === normalizeRef(candidate.category);
-  });
-  if (possible) {
-    return { level: 'POSSIBLE', reasons: [`Same amount and category as transaction ${possible.transactionId}, dated within 3 days.`] };
-  }
-
-  return { level: null, reasons: [] };
+  return sharedCheckDuplicate(projectId, candidate, ops.costTransactions);
 }
 
 // B6/B9: creates a transaction. Strong duplicates are BLOCKED unless an
 // explicit, reasoned Super Admin override is supplied -- override is never
 // the default path.
+// FT-5→FT-8 Consolidation, Section 14 -- CRITICAL: prevent HC/Finance
+// double counting. Every transaction now carries a transactionType:
+//   COST         -> an incurred expense/accrual. Counts toward Actual Cost.
+//                   This is the normal type for SCM and HC transactions,
+//                   and for a Finance transaction that records a cost with
+//                   no prior SCM/HC entry (e.g. a direct owner payment).
+//   PAYMENT_ONLY -> a cash movement that SETTLES a cost already recorded
+//                   (via relatedTransactionId). Does NOT count toward
+//                   Actual Cost a second time -- the expense was already
+//                   counted once, when the COST transaction was posted.
+// Finance users choose the type explicitly; SCM/HC are always COST (an
+// accommodation or procurement entry is never "just a payment" for
+// something already on the ledger from the same source role).
+export const TRANSACTION_TYPES = ['COST', 'PAYMENT_ONLY'];
+
 export function createCostTransaction(projectId, transaction, override) {
   const ops = store.get(projectId);
   if (!ops) return null;
@@ -507,12 +486,20 @@ export function createCostTransaction(projectId, transaction, override) {
       throw err;
     }
   }
+  if (transaction.transactionType === 'PAYMENT_ONLY' && !transaction.relatedTransactionId) {
+    throw new Error('A PAYMENT_ONLY transaction must reference the existing Cost Transaction it settles (relatedTransactionId).');
+  }
+  if (transaction.relatedTransactionId && !ops.costTransactions.some((t) => t.transactionId === transaction.relatedTransactionId)) {
+    throw new Error(`Related transaction "${transaction.relatedTransactionId}" was not found on this project.`);
+  }
   const transactionId = `CST-${new Date().getFullYear()}-${String(ops.costTransactions.length + 1).padStart(6, '0')}`;
   const record = {
     transactionId,
     projectId,
     status: 'DRAFT',
     currency: 'IDR',
+    transactionType: 'COST', // SCM/HC default; Finance may override to PAYMENT_ONLY
+    relatedTransactionId: null,
     createdAt: new Date().toISOString(),
     ...transaction,
     duplicateCheck: duplicate.level ? duplicate : null,

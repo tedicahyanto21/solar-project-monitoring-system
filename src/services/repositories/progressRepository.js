@@ -184,6 +184,44 @@ export async function getProgressHistory(projectId) {
   return storeGetProgressHistory(projectId);
 }
 
+// FT-5→FT-8 Consolidation, Section 15: portfolio S-Curve built from REAL
+// recorded progress snapshots (progressHistory), never static/hardcoded
+// data. Uses last-known-value carry-forward per project for any date a
+// given project has no snapshot of its own, since snapshots are only
+// recorded when a project's detail page is actually visited (see
+// mockOperationalData.recordProgressSnapshot) -- the mock architecture
+// does not guarantee a snapshot exists for every project on every date.
+export async function getPortfolioSCurve() {
+  const projects = await getProjects();
+  const allHistories = await Promise.all(projects.map((p) => getProgressHistory(p.id)));
+  const dateSet = new Set();
+  allHistories.forEach((h) => h.forEach((snap) => dateSet.add(snap.snapshotDate)));
+  const labels = [...dateSet].sort();
+
+  if (labels.length === 0) {
+    return { labels: [], plan: [], actual: [], variance: [], dataAvailable: false };
+  }
+
+  const plan = [];
+  const actual = [];
+  labels.forEach((date) => {
+    const plannedVals = [];
+    const actualVals = [];
+    allHistories.forEach((h) => {
+      const latest = [...h].reverse().find((s) => s.snapshotDate <= date);
+      if (latest) {
+        plannedVals.push(latest.plannedProgress);
+        actualVals.push(latest.actualProgress);
+      }
+    });
+    plan.push(plannedVals.length ? round1(plannedVals.reduce((a, b) => a + b, 0) / plannedVals.length) : null);
+    actual.push(actualVals.length ? round1(actualVals.reduce((a, b) => a + b, 0) / actualVals.length) : null);
+  });
+  const variance = plan.map((p, i) => (p != null && actual[i] != null ? round1(actual[i] - p) : null));
+
+  return { labels, plan, actual, variance, dataAvailable: true };
+}
+
 // Portfolio-wide aggregation for the Dashboard (Project Blueprint
 // SPMS-DOC-05, Section 10). Reads the same per-project calculation used by
 // Project Master -- the Dashboard does not define its own version.

@@ -15,11 +15,12 @@ const CAN_CREATE = [ROLES.SUPER_ADMIN, ROLES.SCM, ROLES.HC, ROLES.FINANCE];
 const STATUS_COLOR = { DRAFT: 'default', POSTED: 'success', VOID: 'error' };
 const CATEGORIES = ['Material Purchase', 'Procurement', 'Vendor Payment', 'Accommodation', 'Transportation', 'Milestone Payment', 'Other'];
 
-const EMPTY = { category: 'Material Purchase', description: '', amount: '', transactionDate: new Date().toISOString().slice(0, 10), referenceNumber: '', invoiceNumber: '' };
+const EMPTY = { category: 'Material Purchase', description: '', amount: '', transactionDate: new Date().toISOString().slice(0, 10), referenceNumber: '', invoiceNumber: '', transactionType: 'COST', relatedTransactionId: '' };
 
 export default function CostLedgerTab({ projectId, onDataChanged }) {
   const { profile } = useAuth();
   const canCreate = CAN_CREATE.includes(profile?.role);
+  const isFinance = profile?.role === 'FINANCE' || profile?.role === 'SUPER_ADMIN';
   const [transactions, setTransactions] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
@@ -32,6 +33,10 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
     getCostTransactions(projectId).then(setTransactions);
   }
   useEffect(load, [projectId]);
+
+  // Existing COST transactions a PAYMENT_ONLY entry could settle -- only
+  // POSTED ones, since a DRAFT/VOID entry isn't a real recorded cost yet.
+  const settleableTransactions = transactions.filter((t) => t.status === 'POSTED' && t.transactionType !== 'PAYMENT_ONLY');
 
   // B8: live duplicate check as the form changes, so the warning is visible
   // BEFORE the user attempts to submit -- not just as a rejection after.
@@ -46,6 +51,7 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
 
   async function handleCreate() {
     if (!form.description.trim() || !form.amount) return;
+    if (form.transactionType === 'PAYMENT_ONLY' && !form.relatedTransactionId) return;
     setError('');
     try {
       await createCostTransaction(projectId, {
@@ -53,6 +59,7 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
         amount: Number(form.amount),
         sourceRole: profile?.role,
         createdBy: profile?.displayName ?? profile?.name ?? 'Unknown',
+        relatedTransactionId: form.transactionType === 'PAYMENT_ONLY' ? form.relatedTransactionId : null,
       });
       setForm(EMPTY);
       setOpen(false);
@@ -106,7 +113,7 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
       <Paper sx={{ overflowX: 'auto' }}>
         <Box component="table" sx={{ width: '100%', borderCollapse: 'collapse', '& th, & td': { textAlign: 'left', p: 1.5, borderBottom: '1px solid', borderColor: 'divider', fontSize: 14 }, '& th': { color: 'text.secondary', fontSize: 12, textTransform: 'uppercase' } }}>
           <thead>
-            <tr><th>Transaction ID</th><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Source</th><th>Status</th><th></th></tr>
+            <tr><th>Transaction ID</th><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Type</th><th>Source</th><th>Status</th><th></th></tr>
           </thead>
           <tbody>
             {transactions.map((t) => (
@@ -116,6 +123,13 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
                 <td>{t.category}</td>
                 <td>{t.description}</td>
                 <td>{t.currency} {Number(t.amount).toLocaleString()}</td>
+                <td>
+                  {t.transactionType === 'PAYMENT_ONLY' ? (
+                    <Chip size="small" label={`Payment for ${t.relatedTransactionId}`} variant="outlined" color="info" />
+                  ) : (
+                    <Chip size="small" label="Cost" variant="outlined" />
+                  )}
+                </td>
                 <td>{t.sourceRole}</td>
                 <td><Chip size="small" label={t.status} color={STATUS_COLOR[t.status]} variant="outlined" /></td>
                 <td>
@@ -152,6 +166,32 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
               <TextField label="Invoice Number" value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} fullWidth />
             </Stack>
             <Typography variant="caption" color="text.secondary">Source role: {profile?.role} (recorded automatically -- cannot be changed here)</Typography>
+            {isFinance && (
+              <>
+                <TextField
+                  select label="Transaction Type" value={form.transactionType}
+                  onChange={(e) => setForm((f) => ({ ...f, transactionType: e.target.value, relatedTransactionId: '' }))}
+                  helperText="Cost = a new incurred expense. Payment for Existing Cost = settling a cost already on the ledger -- does NOT add to Actual Cost again."
+                  fullWidth
+                >
+                  <MenuItem value="COST">Cost (new incurred expense)</MenuItem>
+                  <MenuItem value="PAYMENT_ONLY">Payment for Existing Cost (no double counting)</MenuItem>
+                </TextField>
+                {form.transactionType === 'PAYMENT_ONLY' && (
+                  <TextField
+                    select label="Settles Which Cost Transaction" value={form.relatedTransactionId}
+                    onChange={(e) => setForm((f) => ({ ...f, relatedTransactionId: e.target.value }))}
+                    fullWidth
+                  >
+                    {settleableTransactions.map((t) => (
+                      <MenuItem key={t.transactionId} value={t.transactionId}>
+                        {t.transactionId} \u2014 {t.description} ({t.currency} {Number(t.amount).toLocaleString()})
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                )}
+              </>
+            )}
             {duplicate.level === 'STRONG' && (
               <Alert severity="error">
                 Strong duplicate detected -- this will be BLOCKED on submit.

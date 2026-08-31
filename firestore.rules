@@ -144,9 +144,16 @@ service cloud.firestore {
         // FT-5 B2/B9: SCM/HC/FINANCE create; sourceRole must equal the
         // caller's own role (no impersonation); POSTED transactions are
         // never deleted, only voided (handled as an update, not delete).
+        //
+        // FT-5→FT-8 Consolidation Section 14 (CRITICAL): only FINANCE (or
+        // Super Admin) may submit transactionType == 'PAYMENT_ONLY' -- SCM
+        // and HC transactions are always a new incurred COST, never a
+        // payment settling something else, so they cannot use the field
+        // that exists specifically to avoid double-counting a payment.
         allow create: if hasRole(['SUPER_ADMIN', 'SCM', 'HC', 'FINANCE'])
           && isAssignedToProject(projectId)
-          && (isSuperAdmin() || request.resource.data.sourceRole == myRole());
+          && (isSuperAdmin() || request.resource.data.sourceRole == myRole())
+          && (request.resource.data.transactionType != 'PAYMENT_ONLY' || hasRole(['SUPER_ADMIN', 'FINANCE']));
         allow update: if hasRole(['SUPER_ADMIN'])
           || (hasRole(['SCM', 'HC', 'FINANCE']) && resource.data.sourceRole == myRole() && isAssignedToProject(projectId));
         allow delete: if false; // normal workflow is VOID (an update), never delete

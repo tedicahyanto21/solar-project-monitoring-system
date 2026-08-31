@@ -8,8 +8,7 @@ import ProcurementStatusCard from '../../components/dashboard/executive/Procurem
 import SiteIssuesCard from '../../components/dashboard/executive/SiteIssuesCard';
 import ProjectSpotlight from '../../components/dashboard/executive/ProjectSpotlight';
 import { getProjects } from '../../services/repositories/projectRepository';
-import { getProjectProgress, getPortfolioSummary, getScheduleStatus } from '../../services/repositories/progressRepository';
-import { sCurveData } from './dashboardMockData';
+import { getProjectProgress, getPortfolioSummary, getScheduleStatus, getPortfolioSCurve } from '../../services/repositories/progressRepository';
 
 // 12-column responsive row helper.
 const row = { display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', md: 'repeat(12, 1fr)' } };
@@ -25,11 +24,12 @@ const span = (n) => ({ gridColumn: { xs: '1 / -1', md: `span ${n}` } });
 export default function DashboardPage() {
   const [summary, setSummary] = useState(null);
   const [projects, setProjects] = useState([]);
+  const [sCurve, setSCurve] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [portfolio, projectList] = await Promise.all([getPortfolioSummary(), getProjects()]);
+      const [portfolio, projectList, curve] = await Promise.all([getPortfolioSummary(), getProjects(), getPortfolioSCurve()]);
       const enriched = await Promise.all(
         projectList.map(async (p) => {
           const progress = await getProjectProgress(p.id);
@@ -40,6 +40,7 @@ export default function DashboardPage() {
       if (!cancelled) {
         setSummary(portfolio);
         setProjects(enriched);
+        setSCurve(curve);
       }
     }
     load();
@@ -67,7 +68,16 @@ export default function DashboardPage() {
       <Box sx={row}>
         <Box sx={span(7)}>
           <SectionCard title="S-Curve" subtitle={'Plan vs. Actual \u2014 portfolio'}>
-            <SCurveChart {...sCurveData} height={210} />
+            {sCurve?.dataAvailable ? (
+              <SCurveChart labels={sCurve.labels} plan={sCurve.plan} actual={sCurve.actual} variance={sCurve.variance} height={210} />
+            ) : (
+              <Box sx={{ height: 210, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', px: 2 }}>
+                <Typography variant="body2" color="text.secondary">
+                  No progress snapshots recorded yet. The S-Curve populates as Project Detail
+                  pages are visited over time (Progress Engine history).
+                </Typography>
+              </Box>
+            )}
           </SectionCard>
         </Box>
         <Box sx={span(5)}>
