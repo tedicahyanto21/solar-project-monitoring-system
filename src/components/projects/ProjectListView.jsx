@@ -7,7 +7,7 @@ import ProjectCardList from './ProjectCardList';
  * table vs. card layout so ProjectsPage doesn't need to know about
  * breakpoints at all.
  */
-export default function ProjectListView({ projects, onView, onEdit, onDuplicate, onArchive }) {
+export default function ProjectListView({ projects, onView, onEdit, onDuplicate, onArchive, canEdit }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
@@ -21,7 +21,7 @@ export default function ProjectListView({ projects, onView, onEdit, onDuplicate,
     );
   }
 
-  const props = { projects, onView, onEdit, onDuplicate, onArchive };
+  const props = { projects, onView, onEdit, onDuplicate, onArchive, canEdit };
 
   return isMobile ? <ProjectCardList {...props} /> : <ProjectTable {...props} />;
 }

@@ -25,7 +25,7 @@ function formatDate(iso) {
  * horizontal scrolling; below 'md' the page swaps this out for
  * ProjectCardList entirely.
  */
-export default function ProjectTable({ projects, onView, onEdit, onDuplicate, onArchive }) {
+export default function ProjectTable({ projects, onView, onEdit, onDuplicate, onArchive, canEdit }) {
   const theme = useTheme();
   const isCompact = useMediaQuery(theme.breakpoints.down('lg'));
 
@@ -127,7 +127,7 @@ export default function ProjectTable({ projects, onView, onEdit, onDuplicate, on
                 </td>
               )}
               <td>
-                <ProjectActionMenu project={p} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} onArchive={onArchive} />
+                <ProjectActionMenu project={p} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} onArchive={onArchive} canEdit={canEdit} />
               </td>
             </tr>
           ))}

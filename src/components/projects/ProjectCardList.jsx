@@ -13,7 +13,7 @@ function initialsOf(name) {
  * Mobile card list — replaces ProjectTable below the 'md' breakpoint so
  * the page never forces horizontal scrolling on small screens.
  */
-export default function ProjectCardList({ projects, onView, onEdit, onDuplicate, onArchive }) {
+export default function ProjectCardList({ projects, onView, onEdit, onDuplicate, onArchive, canEdit }) {
   return (
     <Stack spacing={1.5}>
       {projects.map((p) => (
@@ -25,7 +25,7 @@ export default function ProjectCardList({ projects, onView, onEdit, onDuplicate,
                 {p.projectCode} · {p.client}
               </Typography>
             </Box>
-            <ProjectActionMenu project={p} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} onArchive={onArchive} />
+            <ProjectActionMenu project={p} onView={onView} onEdit={onEdit} onDuplicate={onDuplicate} onArchive={onArchive} canEdit={canEdit} />
           </Stack>
 
           <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center', mt: 1, flexWrap: 'wrap' }}>

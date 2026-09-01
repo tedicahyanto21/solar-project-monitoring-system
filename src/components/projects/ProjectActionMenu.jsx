@@ -12,8 +12,14 @@ import ArchiveRoundedIcon from '@mui/icons-material/ArchiveRounded';
  * don't build out a detail page or a real archive workflow, which are
  * out of scope for M3.1. `onEdit` and `onDuplicate` are fully functional
  * against local state.
+ *
+ * Sprint FT-9A Section 8: `canEdit` hides the Edit item for roles other
+ * than SUPER_ADMIN/HEAD_PM -- this is a UX convenience, not the
+ * enforcement. openEditForm() (ProjectsPage) and the Firestore write path
+ * both re-check independently, so this menu item being hidden is never
+ * the only thing standing between an unauthorized role and a write.
  */
-export default function ProjectActionMenu({ project, onView, onEdit, onDuplicate, onArchive }) {
+export default function ProjectActionMenu({ project, onView, onEdit, onDuplicate, onArchive, canEdit }) {
   const [anchorEl, setAnchorEl] = useState(null);
   const open = Boolean(anchorEl);
 
@@ -36,10 +42,12 @@ export default function ProjectActionMenu({ project, onView, onEdit, onDuplicate
           <ListItemIcon><VisibilityRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>View</ListItemText>
         </MenuItem>
-        <MenuItem onClick={() => handle(onEdit)}>
-          <ListItemIcon><EditRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Edit</ListItemText>
-        </MenuItem>
+        {canEdit && (
+          <MenuItem onClick={() => handle(onEdit)}>
+            <ListItemIcon><EditRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Edit</ListItemText>
+          </MenuItem>
+        )}
         <MenuItem onClick={() => handle(onDuplicate)}>
           <ListItemIcon><ContentCopyRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Duplicate</ListItemText>

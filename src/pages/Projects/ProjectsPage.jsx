@@ -6,20 +6,22 @@ import ProjectSummaryCards from '../../components/projects/ProjectSummaryCards';
 import ProjectFilters from '../../components/projects/ProjectFilters';
 import ProjectListView from '../../components/projects/ProjectListView';
 import ProjectFormDialog from '../../components/projects/ProjectFormDialog';
-import { getProjects, createProject, duplicateProjectRecord } from '../../services/repositories/projectRepository';
+import { getProjects, createProject, updateProject, duplicateProjectRecord } from '../../services/repositories/projectRepository';
 import { getProjectProgress, getScheduleStatus } from '../../services/repositories/progressRepository';
 import { useAuth } from '../../context/AuthContext';
 import { ROLES } from '../../constants/roles';
 
-// Project Creation authority (Sprint FT-4, Part B.2): only these roles may
-// create a project. Checked both for button visibility AND inside
-// openCreateForm() itself -- a hidden button alone is not access control.
-const CAN_CREATE_PROJECT_ROLES = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM];
+// Project Creation/Edit authority (Sprint FT-4 Part B.2; Sprint FT-9A
+// Section 8): only these roles may create OR edit a project. Checked both
+// for button visibility AND inside the action handlers themselves -- a
+// hidden button alone is not access control. This is also enforced
+// independently in firestore.rules (projects collection).
+const CAN_MANAGE_PROJECT_ROLES = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM];
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
   const { profile } = useAuth();
-  const canCreateProject = CAN_CREATE_PROJECT_ROLES.includes(profile?.role);
+  const canManageProject = CAN_MANAGE_PROJECT_ROLES.includes(profile?.role);
   // Loaded through the repository layer (not imported from mock data
   // directly) so swapping in a Firestore-backed projectRepository later
   // does not require changing this page. See services/repositories/projectRepository.js.
@@ -58,6 +60,7 @@ export default function ProjectsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+  const [formError, setFormError] = useState('');
 
   const filteredProjects = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -80,13 +83,16 @@ export default function ProjectsPage() {
   }
 
   function openCreateForm() {
-    if (!canCreateProject) return; // defense in depth -- see CAN_CREATE_PROJECT_ROLES above
+    if (!canManageProject) return; // defense in depth -- see CAN_MANAGE_PROJECT_ROLES above
     setEditingProject(null);
+    setFormError('');
     setDialogOpen(true);
   }
 
   function openEditForm(project) {
+    if (!canManageProject) return; // Sprint FT-9A Section 8: edit was previously ungated -- fixed here
     setEditingProject(project);
+    setFormError('');
     setDialogOpen(true);
   }
 
@@ -94,16 +100,26 @@ export default function ProjectsPage() {
     setDialogOpen(false);
   }
 
+  // Sprint FT-9A: errors (duplicate project, not found, unauthorized,
+  // Firestore failure) are surfaced in the dialog, never swallowed --
+  // Section 13.
   async function handleFormSubmit(values) {
-    if (editingProject) {
-      setProjects((prev) => prev.map((p) => (p.id === editingProject.id ? { ...p, ...values } : p)));
-      notify(`${values.projectName} updated successfully.`);
-    } else {
-      const newProject = await createProject(values);
-      setProjects((prev) => [newProject, ...prev]);
-      notify(`${newProject.projectName} created successfully.`);
+    if (!canManageProject) return;
+    setFormError('');
+    try {
+      if (editingProject) {
+        const updated = await updateProject(editingProject.id, values);
+        setProjects((prev) => prev.map((p) => (p.id === editingProject.id ? { ...p, ...updated } : p)));
+        notify(`${values.projectName} updated successfully.`);
+      } else {
+        const newProject = await createProject(values);
+        setProjects((prev) => [newProject, ...prev]);
+        notify(`${newProject.projectName} created successfully.`);
+      }
+      setDialogOpen(false);
+    } catch (err) {
+      setFormError(err.message);
     }
-    setDialogOpen(false);
   }
 
   // Project Detail (Project Blueprint SPMS-DOC-05, Section 11) is a
@@ -138,7 +154,7 @@ export default function ProjectsPage() {
             Project portfolio and execution monitoring
           </Typography>
         </Box>
-        {canCreateProject && (
+        {canManageProject && (
           <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={openCreateForm}>
             New Project
           </Button>
@@ -166,6 +182,7 @@ export default function ProjectsPage() {
           onEdit={openEditForm}
           onDuplicate={handleDuplicate}
           onArchive={handleArchive}
+          canEdit={canManageProject}
         />
       </Paper>
 
@@ -174,6 +191,7 @@ export default function ProjectsPage() {
         project={editingProject}
         onClose={closeForm}
         onSubmit={handleFormSubmit}
+        error={formError}
       />
 
       <Snackbar

@@ -12,6 +12,7 @@ import {
   TextField,
   MenuItem,
   Button,
+  Alert,
 } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { PROJECT_STATUSES, PROJECT_MANAGERS, CAPACITY_UNITS, REGIONS } from '../../data/mockProjects';
@@ -37,7 +38,7 @@ const EMPTY_VALUES = {
  * fields collected by this form are written back; operational fields
  * (progress, health, SPI, issues, manpower) are left untouched by edits.
  */
-export default function ProjectFormDialog({ open, project, onClose, onSubmit }) {
+export default function ProjectFormDialog({ open, project, onClose, onSubmit, error }) {
   const {
     control,
     handleSubmit,
@@ -79,6 +80,7 @@ export default function ProjectFormDialog({ open, project, onClose, onSubmit }) 
 
         <DialogContent dividers>
           <Stack spacing={2.25} sx={{ pt: 0.5 }}>
+            {error && <Alert severity="error">{error}</Alert>}
             <Controller
               name="projectName"
               control={control}

@@ -91,8 +91,21 @@ service cloud.firestore {
       // Portfolio-wide read (Dashboard, BOD) vs. assigned-project read for
       // operational roles -- SPMS-DOC-07 Section 6.
       allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
-      allow create: if hasRole(['SUPER_ADMIN', 'HEAD_PM']);
-      allow update: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'PROJECT_MANAGER']);
+      allow create: if hasRole(['SUPER_ADMIN', 'HEAD_PM'])
+        // Sprint FT-9A Section 9: duplicate protection enforced at the
+        // rules layer too, not just in projectService.js -- a client
+        // cannot overwrite an existing project by calling create/setDoc
+        // directly against Firestore, bypassing the application's own
+        // existence check.
+        && !exists(/databases/$(database)/documents/projects/$(projectId));
+      // Sprint FT-9A Section 8: tightened from ['SUPER_ADMIN','HEAD_PM',
+      // 'PROJECT_MANAGER'] to match the explicit FT-9A authorization
+      // requirement -- Project Master document edits are SUPER_ADMIN/
+      // HEAD_PM only. Project Manager's broader "assigned project" access
+      // (Blueprint SPMS-DOC-05 Section 9) applies to the operational
+      // SUBCOLLECTIONS below, not to this master document -- see
+      // isAssignedToProject() rules further down, which are unchanged.
+      allow update: if hasRole(['SUPER_ADMIN', 'HEAD_PM']);
       allow delete: if isSuperAdmin(); // archive in application logic, not a hard delete pattern
 
       match /projectAssignments/{userId} {

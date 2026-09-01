@@ -3,10 +3,10 @@
 //
 // FT-8 Part F (migration strategy): reads branch on `isLocalMode` between
 // the mock array and Firestore -- the two are never both authoritative at
-// once. Project CREATION is not yet wired to Firestore (a full write path,
-// including validation, is a separate implementation sprint); it stays
-// mock-only and says so clearly rather than silently doing something
-// inconsistent in real-Firebase mode.
+// once. FT-9A: create/update now have a real Firestore write path too
+// (see services/firebase/projectService.js) -- duplicate protection,
+// createdAt preservation, and targeted (non-destructive) updates all live
+// there, not in this file.
 import { isLocalMode } from '../firebase/config';
 import * as firebaseProjects from '../firebase/projectService';
 import {
@@ -29,10 +29,27 @@ export async function getProjectById(projectId) {
 }
 
 export async function createProject(formValues) {
-  if (!isLocalMode) {
-    throw new Error('Project creation is not yet available in Firestore mode. This is prepared in a future sprint.');
+  // Section 5: preserve the EXISTING id-generation mechanism
+  // (createBlankProject's crypto.randomUUID()) for both modes, rather than
+  // inventing a second scheme for Firestore. Only the persistence step
+  // forks between LOCAL and FIREBASE mode.
+  const projectData = createBlankProject(formValues);
+  if (isLocalMode) {
+    return projectData;
   }
-  return createBlankProject(formValues);
+  return firebaseProjects.createProject(projectData.id, projectData);
+}
+
+// Sprint FT-9A: real targeted update. LOCAL MODE has no persistent project
+// store separate from ProjectsPage's own React state (creation already
+// worked this way since Sprint FT-4) -- this just echoes the patch back so
+// the calling page's existing local-state merge behaves identically to
+// before; FIREBASE MODE performs the actual targeted Firestore update.
+export async function updateProject(projectId, patch) {
+  if (isLocalMode) {
+    return { id: projectId, ...patch };
+  }
+  return firebaseProjects.updateProject(projectId, patch);
 }
 
 export async function duplicateProjectRecord(project) {
