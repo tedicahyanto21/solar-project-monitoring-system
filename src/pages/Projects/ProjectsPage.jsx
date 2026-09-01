@@ -78,6 +78,15 @@ export default function ProjectsPage() {
     });
   }, [projects, search, statusFilter, pmFilter, regionFilter]);
 
+  // FT-9A-01: distinct PM names actually present in the loaded project
+  // list -- sourced from real data (mock or Firestore, whichever is
+  // active), not the hardcoded mock PROJECT_MANAGERS list. Reuses the
+  // already-loaded `projects` rather than issuing a second users query.
+  const pmOptions = useMemo(
+    () => [...new Set(projects.map((p) => p.projectManager).filter(Boolean))].sort(),
+    [projects]
+  );
+
   function notify(message, severity = 'success') {
     setSnackbar({ open: true, message, severity });
   }
@@ -172,6 +181,7 @@ export default function ProjectsPage() {
             onStatusChange={setStatusFilter}
             pm={pmFilter}
             onPmChange={setPmFilter}
+            pmOptions={pmOptions}
             region={regionFilter}
             onRegionChange={setRegionFilter}
           />

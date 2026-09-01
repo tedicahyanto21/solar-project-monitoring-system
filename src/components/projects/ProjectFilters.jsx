@@ -1,11 +1,18 @@
 import { Box, InputBase, Select, MenuItem } from '@mui/material';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import { PROJECT_STATUSES, PROJECT_MANAGERS, REGIONS } from '../../data/mockProjects';
+import { PROJECT_STATUSES, REGIONS } from '../../data/mockProjects';
 
 /**
  * Realtime search + Status + PM + Region filter row. Fully controlled —
  * this component holds no state of its own, so the page can derive the
  * filtered list from a single source of truth.
+ *
+ * FT-9A-01: the Project Manager filter options come from `pmOptions`
+ * (distinct PM names already present in the loaded, real project list --
+ * see ProjectsPage.jsx), not from the hardcoded mock PROJECT_MANAGERS list.
+ * This keeps the filter consistent with whatever PMs actually have
+ * projects, whether that data came from mock or Firestore, without this
+ * component fetching users itself (avoiding a second/duplicate query).
  */
 export default function ProjectFilters({
   search,
@@ -14,6 +21,7 @@ export default function ProjectFilters({
   onStatusChange,
   pm,
   onPmChange,
+  pmOptions,
   region,
   onRegionChange,
 }) {
@@ -72,8 +80,8 @@ export default function ProjectFilters({
         sx={{ minWidth: 170, height: 40 }}
       >
         <MenuItem value="all">All Project Managers</MenuItem>
-        {PROJECT_MANAGERS.map((p) => (
-          <MenuItem key={p.id} value={p.name}>{p.name}</MenuItem>
+        {pmOptions.map((name) => (
+          <MenuItem key={name} value={name}>{name}</MenuItem>
         ))}
       </Select>
 

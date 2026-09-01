@@ -259,7 +259,13 @@ export function createBlankProject(formValues) {
     openIssues: 0,
     manpower: 0,
     ...formValues,
-    projectManagerId: pmId(formValues.projectManager),
+    // FT-9A-01: projectManagerId is now supplied by the form itself (a
+    // real userId from userRepository.getUsers(), selected in
+    // ProjectFormDialog) -- it must be preserved, never overwritten by the
+    // legacy name-based pmId() lookup. That lookup is kept ONLY as a
+    // fallback for any caller that still doesn't provide a real
+    // projectManagerId (there should be none going forward).
+    projectManagerId: formValues.projectManagerId || pmId(formValues.projectManager),
   };
 }
 
