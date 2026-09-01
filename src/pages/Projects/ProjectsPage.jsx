@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Stack, Typography, Button, Paper, Snackbar, Alert } from '@mui/material';
+import { Box, Stack, Typography, Button, Paper, Snackbar, Alert, CircularProgress } from '@mui/material';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ProjectSummaryCards from '../../components/projects/ProjectSummaryCards';
 import ProjectFilters from '../../components/projects/ProjectFilters';
@@ -26,27 +26,41 @@ export default function ProjectsPage() {
   // directly) so swapping in a Firestore-backed projectRepository later
   // does not require changing this page. See services/repositories/projectRepository.js.
   const [projects, setProjects] = useState([]);
+  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
-    getProjects().then(async (data) => {
-      // Overall Progress and Schedule Status are computed by
-      // progressRepository, never typed or stored ad hoc here (Sprint
-      // FT-4 validation item 10).
-      const enriched = await Promise.all(
-        data.map(async (p) => {
-          const progress = await getProjectProgress(p.id);
-          const schedule = await getScheduleStatus(p);
-          return {
-            ...p,
-            progress: progress?.overallProgress ?? p.progress,
-            scheduleStatus: schedule.label,
-            isOnSchedule: schedule.isOnSchedule,
-          };
-        })
-      );
-      if (!cancelled) setProjects(enriched);
-    });
+    setLoadingProjects(true);
+    setLoadError('');
+    getProjects()
+      .then(async (data) => {
+        // Overall Progress and Schedule Status are computed by
+        // progressRepository, never typed or stored ad hoc here (Sprint
+        // FT-4 validation item 10).
+        const enriched = await Promise.all(
+          data.map(async (p) => {
+            const progress = await getProjectProgress(p.id);
+            const schedule = await getScheduleStatus(p);
+            return {
+              ...p,
+              progress: progress?.overallProgress ?? p.progress,
+              scheduleStatus: schedule.label,
+              isOnSchedule: schedule.isOnSchedule,
+            };
+          })
+        );
+        if (!cancelled) setProjects(enriched);
+      })
+      // FT-9B AC-B09: a failed read (Firestore permission/network error in
+      // Firebase mode, etc.) must surface a clear message, never fail
+      // silently with an empty list that looks like "no projects exist".
+      .catch((err) => {
+        if (!cancelled) setLoadError(err.message || 'Could not load projects. Please try again.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProjects(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -172,6 +186,12 @@ export default function ProjectsPage() {
 
       <ProjectSummaryCards projects={projects} />
 
+      {loadError && (
+        <Alert severity="error" sx={{ mb: -1 }}>
+          {loadError}
+        </Alert>
+      )}
+
       <Paper sx={{ p: { xs: 2, sm: 2.5 } }}>
         <Box sx={{ mb: 2.5 }}>
           <ProjectFilters
@@ -186,14 +206,21 @@ export default function ProjectsPage() {
             onRegionChange={setRegionFilter}
           />
         </Box>
-        <ProjectListView
-          projects={filteredProjects}
-          onView={handleView}
-          onEdit={openEditForm}
-          onDuplicate={handleDuplicate}
-          onArchive={handleArchive}
-          canEdit={canManageProject}
-        />
+        {loadingProjects ? (
+          <Stack alignItems="center" sx={{ py: 6, gap: 1.5 }}>
+            <CircularProgress size={28} />
+            <Typography variant="body2" color="text.secondary">Loading projects&hellip;</Typography>
+          </Stack>
+        ) : (
+          <ProjectListView
+            projects={filteredProjects}
+            onView={handleView}
+            onEdit={openEditForm}
+            onDuplicate={handleDuplicate}
+            onArchive={handleArchive}
+            canEdit={canManageProject}
+          />
+        )}
       </Paper>
 
       <ProjectFormDialog
