@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
-import { Box, Stack, Typography, Paper, Chip, Button, Tabs, Tab } from '@mui/material';
+import { Box, Stack, Typography, Paper, Chip, Button, Tabs, Tab, Alert } from '@mui/material';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import { getProjectById } from '../../services/repositories/projectRepository';
 import { getProjectProgress, getScheduleStatus, recordProgressSnapshot } from '../../services/repositories/progressRepository';
@@ -23,6 +23,7 @@ export default function ProjectDetailPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState(undefined); // undefined = loading, null = not found
+  const [loadError, setLoadError] = useState('');
   const [progress, setProgress] = useState(null);
   const [schedule, setSchedule] = useState(null);
   const [tab, setTab] = useState(0);
@@ -36,17 +37,44 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     let cancelled = false;
     setTab(0);
-    getProjectById(projectId).then(async (data) => {
-      if (cancelled || !data) return;
-      setProject(data);
-      const [p, s] = await Promise.all([getProjectProgress(projectId), getScheduleStatus(data)]);
-      if (cancelled) return;
-      setProgress(p);
-      setSchedule(s);
-      // A9: record today's snapshot as soon as we know current progress --
-      // safe to call on every visit, since the store de-duplicates by day.
-      recordProgressSnapshot(data);
-    });
+    // FT-9C: reset to the loading state and clear any previous project's
+    // data/progress/error BEFORE fetching -- otherwise, navigating directly
+    // from one project's detail page to another (projectId changes without
+    // an unmount) would briefly keep rendering the PREVIOUS project's data
+    // while the new fetch is in flight (a stale-data leak, AC-C05/C-09).
+    setProject(undefined);
+    setProgress(null);
+    setSchedule(null);
+    setLoadError('');
+
+    getProjectById(projectId)
+      .then(async (data) => {
+        if (cancelled) return;
+        // FT-9C AC-C10 fix: a not-found result (data is null/undefined,
+        // e.g. a deleted project or a mistyped URL) must actually reach
+        // the "Project not found" UI branch below. Previously this early-
+        // returned without ever calling setProject(null), leaving the page
+        // stuck on "Loading project..." forever -- that branch was
+        // unreachable dead code.
+        if (!data) {
+          setProject(null);
+          return;
+        }
+        setProject(data);
+        const [p, s] = await Promise.all([getProjectProgress(projectId), getScheduleStatus(data)]);
+        if (cancelled) return;
+        setProgress(p);
+        setSchedule(s);
+        // A9: record today's snapshot as soon as we know current progress --
+        // safe to call on every visit, since the store de-duplicates by day.
+        recordProgressSnapshot(data);
+      })
+      // FT-9C AC-C11: a Firestore read failure must show a clear message,
+      // not leave the page stuck on "Loading project..." forever with an
+      // unhandled promise rejection.
+      .catch((err) => {
+        if (!cancelled) setLoadError(err.message || 'Could not load this project. Please try again.');
+      });
     return () => { cancelled = true; };
   }, [projectId]);
 
@@ -56,9 +84,13 @@ export default function ProjectDetailPage() {
         Back to Project Master
       </Button>
 
-      {project === undefined && <Typography color="text.secondary">Loading project&hellip;</Typography>}
+      {loadError && (
+        <Alert severity="error">{loadError}</Alert>
+      )}
 
-      {project === null && (
+      {!loadError && project === undefined && <Typography color="text.secondary">Loading project&hellip;</Typography>}
+
+      {!loadError && project === null && (
         <Paper sx={{ p: 4, textAlign: 'center' }}>
           <Typography variant="h6" fontWeight={700}>Project not found</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -70,7 +102,7 @@ export default function ProjectDetailPage() {
         </Paper>
       )}
 
-      {project && (
+      {!loadError && project && (
         <>
           <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
             <ProgressArc size={40} strokeWidth={4} progress={(progress?.overallProgress ?? project.progress ?? 0) / 100} />

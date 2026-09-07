@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { Box, Typography, Paper } from '@mui/material';
 import StatusBadge from '../../../components/dashboard/StatusBadge';
 import ProjectStatusChip from '../../../components/projects/ProjectStatusChip';
 import CircularStat from '../../../components/dashboard/CircularStat';
+import { getUserById } from '../../../services/repositories/userRepository';
 
 function formatDate(iso) {
   if (!iso) return '\u2014';
@@ -23,8 +25,31 @@ function Field({ label, value }) {
 
 const fieldGrid = { display: 'grid', gap: 2.5, gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(3, 1fr)' } };
 
-// Fields per Sprint FT-4, Part B.4 -- do not add fields beyond this list.
+// Fields per Sprint FT-4, Part B.4, plus Project Manager (Sprint FT-9C
+// AC-C07): do not add fields beyond this list without updating the
+// Requirement Specification first.
 export default function OverviewTab({ project, progress, schedule }) {
+  // FT-9C: projectManagerId is the authoritative relationship -- the name
+  // shown here is resolved live from the current user record, not trusted
+  // from the denormalized project.projectManager string, which could go
+  // stale (e.g. if the user's name changes, or for legacy records whose
+  // projectManagerId predates the real user architecture). Falls back to
+  // the denormalized name only if the ID doesn't resolve to a real user.
+  const [pmName, setPmName] = useState(project.projectManager || '\u2014');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!project.projectManagerId) {
+      setPmName(project.projectManager || '\u2014');
+      return undefined;
+    }
+    getUserById(project.projectManagerId).then((user) => {
+      if (cancelled) return;
+      setPmName(user?.name || project.projectManager || '\u2014');
+    });
+    return () => { cancelled = true; };
+  }, [project.projectManagerId, project.projectManager]);
+
   return (
     <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', md: '2fr 1fr' } }}>
       <Paper sx={{ p: 3 }}>
@@ -34,6 +59,7 @@ export default function OverviewTab({ project, progress, schedule }) {
           <Field label="Customer" value={project.client} />
           <Field label="Location" value={project.location} />
           <Field label="Capacity" value={`${project.capacity} ${project.capacityUnit}`} />
+          <Field label="Project Manager" value={pmName} />
           <Field label="Contract Date" value={formatDate(project.contractStart)} />
           <Field label="Start Date" value={formatDate(project.contractStart)} />
           <Field label="Planned COD" value={formatDate(project.targetCOD)} />
