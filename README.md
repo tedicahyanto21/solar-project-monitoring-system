@@ -114,15 +114,26 @@ emulator. Treat it as a starting point for review, not an approved policy.
 
 ## Known Limitations
 
+- **Progress component weights do not yet persist to Firestore.** `progressRepository.setProjectWeights()` calls the mock store unconditionally, with no `isLocalMode` branch -- in Firebase mode, saving weights in Work Structure currently writes to the in-memory mock store instead of Firestore. This is a Progress Engine persistence gap, intentionally deferred to the Progress Engine → Firebase migration (a separate, later task) rather than fixed piecemeal here.
 - No Firebase project or emulator has ever been exercised in this
   repository's development history. The Firestore-backed repository code
   compiles and is structurally complete for `users`, `projects`, and all
   project subcollections plus Cost Control, but has zero real read/write
   verification. The Firebase Local Emulator Suite could not be installed
   in this sandbox (its binary download is blocked by network egress
-  rules), and no live Firebase project/credentials exist for SPMS.
+  rules), and this sandbox has no working network path to
+  `identitytoolkit.googleapis.com` or `firestore.googleapis.com` either
+  (confirmed via explicit `x-deny-reason: host_not_allowed` responses),
+  even when a real project's credentials were supplied.
 - The generic contractual `milestones` timeline (per-phase schedule in
   Work Structure) has no Firestore-backed implementation yet -- mock-only.
+  This is a deliberate scope decision, not an oversight: the canonical
+  Work Structure PLAN/ACTUAL data model already exists as the
+  domain-specific collections (`constructionActivities`,
+  `procurementMilestones`, `engineeringDocuments`, `commissioningItems`),
+  all of which ARE Firestore-backed; the generic milestones array is a
+  separate, lower-stakes, read-mostly schedule display, not part of that
+  canonical model.
 - Progress History snapshots are only recorded when a project's detail
   page is visited; there is no scheduled/background snapshot job, so the
   Dashboard S-Curve and Monthly Report "Start of Month" figures may be
@@ -135,6 +146,11 @@ emulator. Treat it as a starting point for review, not an approved policy.
 - User deactivation is enforced at sign-in time, not in real time -- a
   user deactivated while already logged in elsewhere is not force-logged-
   out until their session's auth state next changes.
+- There are two independent, unreconciled mechanisms for "who is the
+  Project Manager": `project.projectManagerId` (set via Add/Edit Project)
+  and the separate `projects/{id}/assignments` PROJECT_MANAGER role
+  assignment (set via the Team tab). Both are individually correct and
+  userId-based, but nothing keeps them in sync with each other.
 
 ## Design notes
 

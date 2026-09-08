@@ -137,7 +137,19 @@ service cloud.firestore {
 
       match /constructionActivities/{activityId} {
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
-        allow write: if hasRole(['SUPER_ADMIN', 'SITE_MANAGER']) && isAssignedToProject(projectId) || isSuperAdmin();
+        // Master Prompt #1, Section 9 (Plan vs Actual ownership):
+        // PROJECT_MANAGER owns PLAN (activity name/plannedQuantity/unit/
+        // weight); SITE_MANAGER owns ACTUAL (actualQuantity/history) only.
+        // This was previously a blanket `allow write` for SITE_MANAGER
+        // covering every field -- enforced here at the field level via
+        // diff().affectedKeys(), not just by hiding the inputs in the UI:
+        // a SITE_MANAGER update that touches any PLAN field is rejected
+        // outright, even if attempted via a direct Firestore write.
+        allow create: if hasRole(['SUPER_ADMIN', 'PROJECT_MANAGER']) && isAssignedToProject(projectId);
+        allow update: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId))
+          || (hasRole(['SITE_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['actualQuantity', 'history', 'updatedAt']));
       }
 
       match /commissioningItems/{itemId} {

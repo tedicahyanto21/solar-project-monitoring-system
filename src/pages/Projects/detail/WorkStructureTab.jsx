@@ -6,6 +6,13 @@ import ProjectProgressBar from '../../../components/projects/ProjectProgressBar'
 import { useAuth } from '../../../context/AuthContext';
 import { ROLES } from '../../../constants/roles';
 
+// Master Prompt #1, Section 9 (Plan vs Actual ownership): progress
+// component weights are PLAN-level configuration. Previously this tab had
+// NO role restriction at all on editing/saving them -- any authenticated
+// role that could open this tab could change them. Restricted to the
+// established PLAN-owning roles (Blueprint SPMS-DOC-05 Section 5:
+// PROJECT_MANAGER owns delivery; HEAD_PM/SUPER_ADMIN oversee).
+const CAN_MANAGE_WEIGHTS = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.PROJECT_MANAGER];
 const CAN_MANAGE_PROCUREMENT = [ROLES.SCM, ROLES.SUPER_ADMIN];
 
 function formatDate(iso) {
@@ -27,6 +34,7 @@ function formatDate(iso) {
 // the whole active set, HSE included.
 export default function WorkStructureTab({ projectId, progress, onWeightsChanged }) {
   const { profile } = useAuth();
+  const canManageWeights = CAN_MANAGE_WEIGHTS.includes(profile?.role);
   const canManageProcurement = CAN_MANAGE_PROCUREMENT.includes(profile?.role);
   const [milestones, setMilestones] = useState([]);
   const [procurementMilestones, setProcurementMilestones] = useState([]);
@@ -56,12 +64,14 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
   const isValid = isValidWeightTotal(weights);
 
   function handleWeightChange(key, value) {
+    if (!canManageWeights) return; // defense in depth, not just disabled inputs
     setWeights((w) => ({ ...w, [key]: value === '' ? '' : Number(value) }));
     setSaved(false);
     setError('');
   }
 
   function handleToggleHse(checked) {
+    if (!canManageWeights) return;
     setWeights((w) => {
       if (checked) return { ...w, hse: 0 };
       const { hse: _drop, ...rest } = w;
@@ -72,6 +82,7 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
   }
 
   async function handleSave() {
+    if (!canManageWeights) return;
     try {
       await setProjectWeights(projectId, weights);
       setSaved(true);
@@ -114,6 +125,7 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
               size="small"
               value={weights[key] ?? ''}
               onChange={(e) => handleWeightChange(key, e.target.value)}
+              disabled={!canManageWeights}
               slotProps={{ input: { endAdornment: '%' } }}
             />
           ))}
@@ -124,13 +136,14 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
               size="small"
               value={weights.hse ?? ''}
               onChange={(e) => handleWeightChange('hse', e.target.value)}
+              disabled={!canManageWeights}
               slotProps={{ input: { endAdornment: '%' } }}
             />
           )}
         </Box>
         <FormControlLabel
           sx={{ mt: 1 }}
-          control={<Checkbox size="small" checked={hseIncluded} onChange={(e) => handleToggleHse(e.target.checked)} />}
+          control={<Checkbox size="small" checked={hseIncluded} onChange={(e) => handleToggleHse(e.target.checked)} disabled={!canManageWeights} />}
           label={
             <Typography variant="caption" color="text.secondary">
               Include HSE / Permit as a weighted Overall Progress component (otherwise it is
@@ -138,14 +151,21 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
             </Typography>
           }
         />
-        <Stack direction="row" spacing={2} sx={{ mt: 2, alignItems: 'center' }}>
-          <Button variant="contained" size="small" disabled={!isValid || saved} onClick={handleSave}>
-            Save Weights
-          </Button>
-          <Typography variant="body2" color={isValid ? 'text.secondary' : 'error.main'} fontWeight={isValid ? 400 : 600}>
-            Total: {totalWeight}%
+        {canManageWeights ? (
+          <Stack direction="row" spacing={2} sx={{ mt: 2, alignItems: 'center' }}>
+            <Button variant="contained" size="small" disabled={!isValid || saved} onClick={handleSave}>
+              Save Weights
+            </Button>
+            <Typography variant="body2" color={isValid ? 'text.secondary' : 'error.main'} fontWeight={isValid ? 400 : 600}>
+              Total: {totalWeight}%
+            </Typography>
+          </Stack>
+        ) : (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+            Total: {totalWeight}% &middot; Only Super Admin, Head PM, and the assigned Project
+            Manager may change progress weights (Master Prompt #1, Section 9).
           </Typography>
-        </Stack>
+        )}
         {!isValid && (
           <Alert severity="error" sx={{ mt: 2 }}>
             Weights must total exactly 100% (currently {totalWeight}%). This configuration
