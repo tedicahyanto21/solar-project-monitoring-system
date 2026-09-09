@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   isValidWeightTotal,
   calculateEngineeringProgress,
@@ -8,8 +8,10 @@ import {
   calculateCommissioningProgress,
   getProjectProgress,
   getPortfolioSummary,
+  getScheduleStatus,
   WEIGHT_TOLERANCE,
 } from './progressRepository';
+import * as projectDetailRepo from './projectDetailRepository';
 import { initialProjects } from '../../data/mockProjects';
 
 describe('isValidWeightTotal (weight validation, must total exactly 100%)', () => {
@@ -224,5 +226,66 @@ describe('Section 24.G: single calculation owner -- getPortfolioSummary reuses g
       (perProject.reduce((sum, p) => sum + (p?.overallProgress ?? 0), 0) / initialProjects.length) * 10
     ) / 10;
     expect(summary.overallProgress).toBe(expected);
+  });
+});
+
+// MP2 Corrective Fix: getPortfolioSummary must calculate progress exactly
+// ONCE per project and reuse that result for schedule status, instead of
+// getScheduleStatus silently recalculating it a second time.
+//
+// Spying on getProjectProgress/getScheduleStatus THEMSELVES does not work
+// reliably here: they are called from within their own module via static
+// ES module bindings, which Vitest's spy cannot intercept for same-file
+// internal calls (confirmed empirically -- an earlier version of this
+// test asserted call counts on the same-module functions directly and
+// consistently reported 0 calls even though the functions plainly ran,
+// as proven by their return values). Instead, this spies on
+// getEngineeringDocuments in projectDetailRepository.js -- a genuine
+// CROSS-MODULE import that getProjectProgress calls once per project as
+// one of its parallel inputs. If getScheduleStatus were still internally
+// recalculating progress, getEngineeringDocuments would be called TWICE
+// per project instead of once, which is exactly the real-world cost
+// (redundant Firestore/repository reads) this fix eliminates.
+describe('MP2 Corrective Fix: getPortfolioSummary does not calculate progress twice per project', () => {
+  it('getEngineeringDocuments (one of getProjectProgress\'s parallel inputs) is read exactly once per project by getPortfolioSummary, not twice', async () => {
+    const spy = vi.spyOn(projectDetailRepo, 'getEngineeringDocuments');
+    spy.mockClear();
+    await getPortfolioSummary();
+    // getPortfolioSummary ALSO calls getEngineeringDocuments directly once
+    // per project (Master Prompt #2's own Dashboard-status fix) alongside
+    // the one call inside getProjectProgress -- so the correct total is
+    // exactly 2 per project (not 3, which is what a still-duplicated
+    // getScheduleStatus would produce: 1 for portfolio.progress + 1 for
+    // the direct engineeringDocuments read + 1 more from a redundant
+    // internal getScheduleStatus recalculation).
+    expect(spy).toHaveBeenCalledTimes(initialProjects.length * 2);
+    spy.mockRestore();
+  });
+
+  it('getScheduleStatus(project, progress) reuses the SUPPLIED progress -- confirmed by producing the correct result with ZERO additional engineering-document reads', async () => {
+    const progress = await getProjectProgress(initialProjects[0].id);
+    const spy = vi.spyOn(projectDetailRepo, 'getEngineeringDocuments');
+    spy.mockClear();
+    const result = await getScheduleStatus(initialProjects[0], progress);
+    expect(spy).not.toHaveBeenCalled();
+    expect(result.actualProgress).toBe(progress.overallProgress);
+    spy.mockRestore();
+  });
+
+  it('backward compatibility: getScheduleStatus(project) with NO second argument still calculates progress internally (one engineering-document read), exactly as before this fix', async () => {
+    const spy = vi.spyOn(projectDetailRepo, 'getEngineeringDocuments');
+    spy.mockClear();
+    const result = await getScheduleStatus(initialProjects[0]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result).toHaveProperty('status');
+    expect(result).toHaveProperty('actualProgress');
+    spy.mockRestore();
+  });
+
+  it('the reused-progress path and the recalculate-internally path produce IDENTICAL schedule results for the same project (proves reuse changes performance, not behavior)', async () => {
+    const progress = await getProjectProgress(initialProjects[1].id);
+    const viaReuse = await getScheduleStatus(initialProjects[1], progress);
+    const viaRecalculation = await getScheduleStatus(initialProjects[1]);
+    expect(viaReuse).toEqual(viaRecalculation);
   });
 });

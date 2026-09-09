@@ -164,9 +164,15 @@ function plannedProgressByTime(project) {
   return clamp01((Date.now() - start) / (end - start)) * 100;
 }
 
-export async function getScheduleStatus(project) {
-  const progress = await getProjectProgress(project.id);
-  const actualProgress = progress?.overallProgress ?? project.progress ?? 0;
+// MP2 Corrective Fix: accepts an optional precomputed `progress` result
+// (from getProjectProgress) so a caller that already has it -- like
+// getPortfolioSummary below -- does not trigger a second, redundant
+// Progress Engine run for the same project. Existing callers that only
+// pass `project` are unaffected: the function still calculates progress
+// internally exactly as before.
+export async function getScheduleStatus(project, progress = null) {
+  const resolvedProgress = progress ?? await getProjectProgress(project.id);
+  const actualProgress = resolvedProgress?.overallProgress ?? project.progress ?? 0;
   const plannedProgress = round1(plannedProgressByTime(project));
   const isOnSchedule = actualProgress >= plannedProgress - SCHEDULE_TOLERANCE_PERCENT;
   return {
@@ -267,13 +273,20 @@ export async function getPortfolioSCurve() {
 export async function getPortfolioSummary() {
   const projects = await getProjects();
   const perProject = await Promise.all(
-    projects.map(async (p) => ({
-      project: p,
-      progress: await getProjectProgress(p.id),
-      schedule: await getScheduleStatus(p),
-      engineeringDocuments: await getEngineeringDocuments(p.id),
-      issues: await getIssues(p.id),
-    }))
+    projects.map(async (p) => {
+      // MP2 Corrective Fix: calculate progress exactly once per project,
+      // then reuse it for BOTH portfolio.progress and schedule status --
+      // previously getScheduleStatus(p) recalculated progress internally,
+      // running the Progress Engine twice per project on every Dashboard
+      // load for no reason.
+      const progress = await getProjectProgress(p.id);
+      const [schedule, engineeringDocuments, issues] = await Promise.all([
+        getScheduleStatus(p, progress),
+        getEngineeringDocuments(p.id),
+        getIssues(p.id),
+      ]);
+      return { project: p, progress, schedule, engineeringDocuments, issues };
+    })
   );
 
   const totalProjects = projects.length;
