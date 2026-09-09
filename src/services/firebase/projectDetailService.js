@@ -7,6 +7,8 @@
 // architecture (firestorePaths.js).
 import { getAllDocs, getOneDoc, createDoc, updateDocById } from './firestoreHelpers';
 import { COLLECTIONS, PROJECT_SUBCOLLECTIONS } from './firestorePaths';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from './config';
 
 function subPath(projectId, subcollection) {
   return `${COLLECTIONS.PROJECTS}/${projectId}/${subcollection}`;
@@ -29,6 +31,23 @@ export async function assignUser(projectId, role, { userId, name }, assignedBy) 
     await createDoc(path, data, userId);
   }
   return getAllDocs(path);
+}
+
+// --- Progress weights ---------------------------------------------------------
+// Stored as a field on the project document itself (same pattern as
+// costService.getPlannedCost/setPlannedCost for plannedCost) rather than a
+// new collection -- Master Prompt #2, Section 13: "prefer an existing
+// canonical project document field... document the decision." progressWeights
+// is a small, project-level configuration value, not a growing operational
+// record, so it belongs on the project doc rather than a subcollection.
+export async function getProjectWeights(projectId) {
+  const snap = await getDoc(doc(db, COLLECTIONS.PROJECTS, projectId));
+  return snap.exists() ? (snap.data().progressWeights ?? null) : null;
+}
+
+export async function setProjectWeights(projectId, weights) {
+  await updateDoc(doc(db, COLLECTIONS.PROJECTS, projectId), { progressWeights: weights });
+  return weights;
 }
 
 // --- Progress history --------------------------------------------------------

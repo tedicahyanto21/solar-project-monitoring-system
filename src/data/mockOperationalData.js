@@ -29,6 +29,10 @@ const DEFAULT_PROCUREMENT_MILESTONE_NAMES = ['PO Released', 'Manufacturing', 'FA
 // weighted component, in which case its key is added here and the total
 // across ALL active keys, HSE included, must still be exactly 100%).
 const DEFAULT_WEIGHTS = { engineering: 20, procurement: 20, construction: 45, commissioning: 15 };
+// Exported (Master Prompt #2, Section 13) so projectDetailRepository can
+// fall back to the SAME default in Firebase mode for a project whose
+// document has no `progressWeights` field yet -- one definition, not two.
+export { DEFAULT_WEIGHTS };
 
 function seedRandom(seed) {
   // Small deterministic PRNG (mulberry32) so mock data is stable across

@@ -2,17 +2,32 @@
 // Design SPMS-DOC-06, Section 7).
 //
 // This is the ONLY place Overall Progress and per-component progress are
-// calculated. Dashboard and Project Master both call into this file rather
-// than computing progress themselves, per the architecture principle:
-// "Do not implement independent business calculations in multiple
-// Dashboard components." Component weights come from the project's own
-// configured weights (mockOperationalData) -- never hardcoded here.
+// calculated -- and, per Master Prompt #2 Section 4.1, the SINGLE OWNER of
+// SPMS progress calculation. Dashboard, Project Master, and Reports all
+// call into this file rather than computing progress themselves.
+//
+// Master Prompt #2: this file previously read its inputs directly from
+// mockOperationalData.getOperations(), which meant Firebase Mode never
+// actually consumed Firebase-backed data for progress -- Firebase Project
+// Detail collections existed, but the Progress Engine ignored them. Inputs
+// now come exclusively through projectDetailRepository (which already
+// branches LOCAL/FIREBASE for every one of these collections) and
+// issueRepository. The CALCULATION FORMULAS below are UNCHANGED from the
+// existing, documented model -- only how the inputs are obtained changed.
+// Calculation ownership (this file) and data ownership (the domain
+// repositories) are deliberately different things (Section 4.2).
 import {
-  getOperations,
-  setProgressWeights as storeSetWeights,
-  recordProgressSnapshot as storeRecordSnapshot,
-  getProgressHistory as storeGetProgressHistory,
-} from '../../data/mockOperationalData';
+  getEngineeringDocuments,
+  getHseDocuments,
+  getProcurementMilestones,
+  getConstructionActivities,
+  getCommissioningChecklist,
+  getProjectWeights,
+  setProjectWeights as detailSetProjectWeights,
+  getProgressHistory as detailGetProgressHistory,
+  recordProgressSnapshot as detailRecordProgressSnapshot,
+} from './projectDetailRepository';
+import { getIssues } from './issueRepository';
 import { getProjects } from './projectRepository';
 
 // FT-4.1 Correction 3: floating-point tolerance for the 100% weight-total
@@ -96,23 +111,36 @@ function clamp01(n) { return Math.max(0, Math.min(1, n)); }
 // This is the single function every screen must call -- never compute
 // Overall Progress inline in a component (A1, A8).
 const COMPONENT_CALCULATORS = {
-  engineering: (ops) => calculateEngineeringProgress(ops.engineeringDocuments),
-  procurement: (ops) => calculateProcurementProgress(ops.procurementMilestones),
-  construction: (ops) => calculateConstructionProgress(ops.constructionActivities),
-  commissioning: (ops) => calculateCommissioningProgress(ops.commissioningChecklist),
-  hse: (ops) => calculateHseProgress(ops.hseDocuments),
+  engineering: (inputs) => calculateEngineeringProgress(inputs.engineeringDocuments),
+  procurement: (inputs) => calculateProcurementProgress(inputs.procurementMilestones),
+  construction: (inputs) => calculateConstructionProgress(inputs.constructionActivities),
+  commissioning: (inputs) => calculateCommissioningProgress(inputs.commissioningChecklist),
+  hse: (inputs) => calculateHseProgress(inputs.hseDocuments),
 };
 
 export async function getProjectProgress(projectId) {
-  const ops = getOperations(projectId);
-  if (!ops) return null;
+  // Master Prompt #2, Section 6: inputs are gathered via the repository
+  // layer -- ONE call per canonical collection, in parallel, not one
+  // Firestore read per render (Section 18). Each of these already
+  // branches LOCAL/FIREBASE on its own; this function does not know or
+  // care which backend is active.
+  const [engineeringDocuments, hseDocuments, procurementMilestones, constructionActivities, commissioningChecklist, activeWeights] =
+    await Promise.all([
+      getEngineeringDocuments(projectId),
+      getHseDocuments(projectId),
+      getProcurementMilestones(projectId),
+      getConstructionActivities(projectId),
+      getCommissioningChecklist(projectId),
+      getProjectWeights(projectId),
+    ]);
+
+  const inputs = { engineeringDocuments, hseDocuments, procurementMilestones, constructionActivities, commissioningChecklist };
 
   const component = {};
   for (const key of Object.keys(COMPONENT_CALCULATORS)) {
-    component[key] = round1(COMPONENT_CALCULATORS[key](ops));
+    component[key] = round1(COMPONENT_CALCULATORS[key](inputs));
   }
 
-  const activeWeights = ops.progressWeights;
   // Valid configurations always total 100 by construction (setProjectWeights
   // refuses anything else -- FT-4.1 Correction 3 / FT-5 A2). Dividing by
   // totalWeight here is a defensive fallback only; it must not be relied on
@@ -156,23 +184,28 @@ export async function getScheduleStatus(project) {
 // weights it reads have already passed this check. Passing a weights
 // object that omits `hse` deactivates HSE as a weighted component;
 // including it activates HSE -- either way the total must be exactly 100.
+//
+// Master Prompt #2, Section 13: validation stays HERE (the calculation
+// engine), not in projectDetailRepository/Firebase service, which are
+// pure data access -- "weight calculation belongs only to
+// progressRepository" applies equally to weight VALIDATION.
 export async function setProjectWeights(projectId, weights) {
   if (!isValidWeightTotal(weights)) {
     const total = Object.values(weights).reduce((a, b) => a + Number(b || 0), 0);
     throw new Error(`Progress component weights must total exactly 100% (currently ${total}%).`);
   }
-  return storeSetWeights(projectId, weights);
+  return detailSetProjectWeights(projectId, weights);
 }
 
 // A9. Progress history snapshots. One snapshot per project per day --
 // calling this again today updates today's snapshot rather than creating a
 // duplicate; snapshots for other days are untouched (see
-// mockOperationalData.recordProgressSnapshot).
+// projectDetailRepository.recordProgressSnapshot).
 export async function recordProgressSnapshot(project) {
   const progress = await getProjectProgress(project.id);
   const actualProgress = progress?.overallProgress ?? project.progress ?? 0;
   const plannedProgress = round1(plannedProgressByTime(project));
-  return storeRecordSnapshot(project.id, {
+  return detailRecordProgressSnapshot(project.id, {
     snapshotDate: new Date().toISOString().slice(0, 10),
     plannedProgress,
     actualProgress,
@@ -181,7 +214,7 @@ export async function recordProgressSnapshot(project) {
 }
 
 export async function getProgressHistory(projectId) {
-  return storeGetProgressHistory(projectId);
+  return detailGetProgressHistory(projectId);
 }
 
 // FT-5→FT-8 Consolidation, Section 15: portfolio S-Curve built from REAL
@@ -225,10 +258,22 @@ export async function getPortfolioSCurve() {
 // Portfolio-wide aggregation for the Dashboard (Project Blueprint
 // SPMS-DOC-05, Section 10). Reads the same per-project calculation used by
 // Project Master -- the Dashboard does not define its own version.
+//
+// Master Prompt #2: previously read engineeringDocuments/issues via
+// getOperations() directly (mock-only, bypassing the repository layer
+// entirely regardless of mode). Now goes through the same
+// projectDetailRepository/issueRepository functions everything else uses,
+// so Dashboard KPIs are Firebase-backed in Firebase mode too.
 export async function getPortfolioSummary() {
   const projects = await getProjects();
   const perProject = await Promise.all(
-    projects.map(async (p) => ({ project: p, progress: await getProjectProgress(p.id), schedule: await getScheduleStatus(p) }))
+    projects.map(async (p) => ({
+      project: p,
+      progress: await getProjectProgress(p.id),
+      schedule: await getScheduleStatus(p),
+      engineeringDocuments: await getEngineeringDocuments(p.id),
+      issues: await getIssues(p.id),
+    }))
   );
 
   const totalProjects = projects.length;
@@ -238,7 +283,7 @@ export async function getPortfolioSummary() {
   const onSchedule = perProject.filter((x) => x.schedule.isOnSchedule).length;
   const onDelay = totalProjects - onSchedule;
 
-  const allEngDocs = perProject.flatMap((x) => getOperations(x.project.id)?.engineeringDocuments ?? []);
+  const allEngDocs = perProject.flatMap((x) => x.engineeringDocuments);
   const engineeringDocStatus = {
     approved: allEngDocs.filter((d) => d.reviewStatus === 'APPROVED').length,
     commented: allEngDocs.filter((d) => d.reviewStatus === 'COMMENTED').length,
@@ -250,7 +295,7 @@ export async function getPortfolioSummary() {
     perProject.reduce((sum, x) => sum + (x.progress?.component.procurement ?? 0), 0) / (totalProjects || 1)
   );
 
-  const allIssues = perProject.flatMap((x) => getOperations(x.project.id)?.issues ?? []);
+  const allIssues = perProject.flatMap((x) => x.issues);
   const openIssues = allIssues.filter((i) => i.status === 'OPEN');
   const siteIssues = {
     open: openIssues.length,

@@ -103,6 +103,53 @@ tests against Firestore -- that would require the Firebase Emulator Suite,
 which could not be run in this repository's development sandbox (see
 Known Limitations).
 
+## Progress Engine architecture
+
+**Calculation ownership is centralized and non-negotiable.**
+`src/services/repositories/progressRepository.js` is the single owner of
+every progress calculation in SPMS: Item Progress, Weighted Contribution,
+Component Progress, Overall Progress, and the S-Curve/Weekly datasets. No
+other file recomputes these. Everything else in the layer stack is a
+*data* concern, never a *calculation* concern:
+
+```text
+Firestore (raw domain data)
+       ↓
+Firebase Service (read/write only -- src/services/firebase/)
+       ↓
+Project Detail Repository (LOCAL/FIREBASE source selection + normalization
+                            -- src/services/repositories/projectDetailRepository.js)
+       ↓
+progressRepository (★ the only calculation owner ★)
+       ↓
+Dashboard / Project Detail / Reports (read-only consumers)
+```
+
+Local Mode and Firebase Mode share the exact same calculation code; only
+the data source underneath `projectDetailRepository` changes. Progress
+component weights are stored as a `progressWeights` field on the
+`projects/{projectId}` document itself (the same project-doc-field pattern
+already used for `plannedCost` in Cost Control), not a separate
+collection. Progress history snapshots continue to live in
+`projects/{projectId}/progressHistory`, one document per calendar day.
+
+**Ownership boundaries:**
+| Concern | Owner |
+|---|---|
+| PLAN data (milestones, target quantities, weights) | PROJECT_MANAGER |
+| ACTUAL data (actual quantities, site results) | SITE_MANAGER |
+| Engineering / HSE domain contribution | ENGINEERING / HSE |
+| All progress **calculation** | `progressRepository` (nobody else) |
+| Persistence | Firebase service layer only |
+| Presentation | UI (Dashboard, Project Detail, Reports) -- read-only |
+
+The generic contractual `milestones` timeline (a per-phase schedule
+display in Work Structure, distinct from the granular
+`procurementMilestones`/`constructionActivities`/`commissioningItems`
+collections that actually feed the calculation) is confirmed **not**
+required by the Progress Engine and remains mock-only by deliberate
+decision, not oversight.
+
 ## Security
 
 `firestore.rules` is a draft: role-based, project-assignment-scoped access
@@ -114,11 +161,11 @@ emulator. Treat it as a starting point for review, not an approved policy.
 
 ## Known Limitations
 
-- **Progress component weights do not yet persist to Firestore.** `progressRepository.setProjectWeights()` calls the mock store unconditionally, with no `isLocalMode` branch -- in Firebase mode, saving weights in Work Structure currently writes to the in-memory mock store instead of Firestore. This is a Progress Engine persistence gap, intentionally deferred to the Progress Engine → Firebase migration (a separate, later task) rather than fixed piecemeal here.
 - No Firebase project or emulator has ever been exercised in this
   repository's development history. The Firestore-backed repository code
-  compiles and is structurally complete for `users`, `projects`, and all
-  project subcollections plus Cost Control, but has zero real read/write
+  compiles and is structurally complete for `users`, `projects`, all
+  project subcollections, Cost Control, and (as of Master Prompt #2) the
+  Progress Engine's inputs/weights/history -- but has zero real read/write
   verification. The Firebase Local Emulator Suite could not be installed
   in this sandbox (its binary download is blocked by network egress
   rules), and this sandbox has no working network path to
@@ -127,13 +174,11 @@ emulator. Treat it as a starting point for review, not an approved policy.
   even when a real project's credentials were supplied.
 - The generic contractual `milestones` timeline (per-phase schedule in
   Work Structure) has no Firestore-backed implementation yet -- mock-only.
-  This is a deliberate scope decision, not an oversight: the canonical
-  Work Structure PLAN/ACTUAL data model already exists as the
-  domain-specific collections (`constructionActivities`,
-  `procurementMilestones`, `engineeringDocuments`, `commissioningItems`),
-  all of which ARE Firestore-backed; the generic milestones array is a
-  separate, lower-stakes, read-mostly schedule display, not part of that
-  canonical model.
+  This is a deliberate scope decision, not an oversight: Master Prompt #2
+  Section 28 explicitly confirmed these generic milestones are NOT
+  required by the Progress Engine's calculation (which reads
+  `procurementMilestones`/`constructionActivities`/`commissioningItems`
+  instead), so no new collection was created for them.
 - Progress History snapshots are only recorded when a project's detail
   page is visited; there is no scheduled/background snapshot job, so the
   Dashboard S-Curve and Monthly Report "Start of Month" figures may be

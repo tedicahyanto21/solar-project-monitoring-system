@@ -1,19 +1,28 @@
 // Repository for Project Master detail sub-collections (Database Design
 // SPMS-DOC-06, Sections 6, 8-11): assignments, milestones, engineering
 // documents, HSE documents, construction activities, commissioning
-// checklist.
+// checklist, progress weights, and progress history.
 //
 // FT-8/consolidation Part F: every function branches on `isLocalMode` and
 // delegates to either the mock store or the Firestore service -- the two
 // are never both authoritative at once (see services/firebase/projectDetailService.js).
 //
-// KNOWN GAP: the generic contractual `milestones` timeline (per-phase
-// schedule display, distinct from the granular procurementMilestones) has
-// no Firestore-backed equivalent yet -- it is not one of the explicit
-// FT-8 Part E collections and remains mock-only. Documented, not hidden.
+// Master Prompt #2: this file is the ONLY place progressRepository (the
+// single progress CALCULATION owner) obtains its raw inputs from. It must
+// never itself calculate progress -- it only accesses and normalizes
+// domain data, per Section 5.3's layer boundary.
+//
+// KNOWN GAP (unchanged since MP #1): the generic contractual `milestones`
+// timeline (per-phase schedule display, distinct from the granular
+// procurementMilestones) has no Firestore-backed equivalent -- it is a
+// display-only concern, not part of the Progress Engine's canonical PLAN/
+// ACTUAL model (MP #2 Section 28 explicitly confirms this is not required
+// for progress calculation), and remains mock-only by deliberate scope
+// decision, not oversight.
 import { isLocalMode } from '../firebase/config';
 import {
   getOperations,
+  DEFAULT_WEIGHTS,
   addEngineeringDocument,
   updateEngineeringDocument as storeUpdateEngineeringDocument,
   addHseDocument,
@@ -22,6 +31,8 @@ import {
   updateProcurementMilestone as storeUpdateProcurementMilestone,
   updateConstructionActivity as storeUpdateConstructionActivity,
   assignUser as storeAssignUser,
+  setProgressWeights as storeSetWeights,
+  recordProgressSnapshot as storeRecordSnapshot,
 } from '../../data/mockOperationalData';
 import * as fb from '../firebase/projectDetailService';
 import { validateAssignable } from './userRepository';
@@ -29,6 +40,38 @@ import { validateAssignable } from './userRepository';
 export async function getMilestones(projectId) {
   // Mock-only -- see file header KNOWN GAP.
   return getOperations(projectId)?.milestones ?? [];
+}
+
+// Master Prompt #2, Section 13: progress component weights. Canonical
+// location is the `progressWeights` field on the project document itself
+// (Firebase: projectDetailService.getProjectWeights/setProjectWeights,
+// following the same project-doc-field pattern already established by
+// costService.getPlannedCost/setPlannedCost) -- not a new collection.
+// Falls back to DEFAULT_WEIGHTS for a project that has none configured
+// yet, in EITHER mode, so progressRepository never has to special-case a
+// missing value.
+export async function getProjectWeights(projectId) {
+  const weights = isLocalMode ? getOperations(projectId)?.progressWeights : await fb.getProjectWeights(projectId);
+  return weights ?? { ...DEFAULT_WEIGHTS };
+}
+
+// Weight-total validation (exactly 100%) is progressRepository's job, not
+// this function's -- this is pure data access/persistence, matching
+// Section 5.3's "domain data access... MUST NOT become a second
+// calculation/validation engine" boundary. progressRepository.
+// setProjectWeights validates BEFORE calling this.
+export async function setProjectWeights(projectId, weights) {
+  return isLocalMode ? storeSetWeights(projectId, weights) : fb.setProjectWeights(projectId, weights);
+}
+
+// Master Prompt #2, Section 14: progressHistory remains the canonical
+// historical record in both modes -- no second history collection.
+export async function getProgressHistory(projectId) {
+  return isLocalMode ? (getOperations(projectId)?.progressHistory ?? []) : fb.getProgressHistory(projectId);
+}
+
+export async function recordProgressSnapshot(projectId, snapshot) {
+  return isLocalMode ? storeRecordSnapshot(projectId, snapshot) : fb.recordProgressSnapshot(projectId, snapshot);
 }
 
 export async function getEngineeringDocuments(projectId) {

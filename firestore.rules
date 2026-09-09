@@ -100,12 +100,22 @@ service cloud.firestore {
         && !exists(/databases/$(database)/documents/projects/$(projectId));
       // Sprint FT-9A Section 8: tightened from ['SUPER_ADMIN','HEAD_PM',
       // 'PROJECT_MANAGER'] to match the explicit FT-9A authorization
-      // requirement -- Project Master document edits are SUPER_ADMIN/
-      // HEAD_PM only. Project Manager's broader "assigned project" access
-      // (Blueprint SPMS-DOC-05 Section 9) applies to the operational
-      // SUBCOLLECTIONS below, not to this master document -- see
-      // isAssignedToProject() rules further down, which are unchanged.
-      allow update: if hasRole(['SUPER_ADMIN', 'HEAD_PM']);
+      // requirement -- Project Master IDENTITY fields (name/client/
+      // capacity/etc.) are SUPER_ADMIN/HEAD_PM only.
+      //
+      // Master Prompt #2, Section 13/22: progressWeights is a DIFFERENT
+      // kind of field -- PLAN-level progress configuration, stored on this
+      // same document (Section 13's "prefer an existing canonical project
+      // document field" decision), not master-record identity. MP#1/MP#2
+      // both establish PROJECT_MANAGER as a PLAN owner for progress
+      // weights specifically (WorkStructureTab's CAN_MANAGE_WEIGHTS). This
+      // second clause allows PROJECT_MANAGER to update ONLY when the
+      // change is scoped to progressWeights -- an update that also touches
+      // any master-identity field is still rejected for that role. This is
+      // field-level defense-in-depth (Section 23), not just the UI check.
+      allow update: if hasRole(['SUPER_ADMIN', 'HEAD_PM'])
+        || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['progressWeights', 'updatedAt']));
       allow delete: if isSuperAdmin(); // archive in application logic, not a hard delete pattern
 
       match /projectAssignments/{userId} {
