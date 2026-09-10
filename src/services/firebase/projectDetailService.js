@@ -103,8 +103,32 @@ export async function updateProcurementMilestone(projectId, milestoneId, patch) 
 }
 
 // --- Construction activities -----------------------------------------------------
+// Master Prompt #3: PLAN (create/updatePlan) and ACTUAL (update) are two
+// explicit, separate functions -- never one unrestricted update. This
+// mirrors the same separation in mockOperationalData.js and is what keeps
+// the Firestore rule's field-level restriction (constructionActivities:
+// PROJECT_MANAGER may only touch PLAN fields, SITE_MANAGER only ACTUAL
+// fields) actually satisfiable by the application code that calls it.
 export async function getConstructionActivities(projectId) {
   return getAllDocs(subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES));
+}
+
+export async function createConstructionActivity(projectId, { activity, plannedQuantity, unit, weight }) {
+  if (!(plannedQuantity > 0)) throw new Error('Planned Quantity must be greater than zero.');
+  return createDoc(subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES), {
+    activity, plannedQuantity, unit, weight, actualQuantity: 0, history: [], updatedAt: new Date().toISOString(),
+  });
+}
+
+export async function updateConstructionActivityPlan(projectId, activityId, { activity, plannedQuantity, unit, weight }) {
+  if (plannedQuantity !== undefined && !(plannedQuantity > 0)) throw new Error('Planned Quantity must be greater than zero.');
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES);
+  const patch = { updatedAt: new Date().toISOString() };
+  if (activity !== undefined) patch.activity = activity;
+  if (plannedQuantity !== undefined) patch.plannedQuantity = plannedQuantity;
+  if (unit !== undefined) patch.unit = unit;
+  if (weight !== undefined) patch.weight = weight;
+  return updateDocById(path, activityId, patch);
 }
 
 // FT-5 A6: same validation as the mock store -- negative rejected, planned

@@ -156,8 +156,16 @@ service cloud.firestore {
         // a SITE_MANAGER update that touches any PLAN field is rejected
         // outright, even if attempted via a direct Firestore write.
         allow create: if hasRole(['SUPER_ADMIN', 'PROJECT_MANAGER']) && isAssignedToProject(projectId);
+        // Master Prompt #3, Section 13/14: symmetric field-level
+        // restriction for BOTH roles, not just SITE_MANAGER as before --
+        // a PROJECT_MANAGER update that touches actualQuantity/history is
+        // now rejected exactly as a SITE_MANAGER update touching
+        // plannedQuantity/weight already was. Neither role can cross into
+        // the other's owned fields via a direct Firestore write, not just
+        // through the UI.
         allow update: if isSuperAdmin()
-          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId))
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activity', 'plannedQuantity', 'unit', 'weight', 'updatedAt']))
           || (hasRole(['SITE_MANAGER']) && isAssignedToProject(projectId)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['actualQuantity', 'history', 'updatedAt']));
       }

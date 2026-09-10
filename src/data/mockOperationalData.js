@@ -351,6 +351,61 @@ export function updateProcurementMilestone(projectId, milestoneId, patch) {
   return ops.procurementMilestones.find((m) => m.id === milestoneId) ?? null;
 }
 
+// --- FT-5 A6 / Master Prompt #3: Construction PLAN vs ACTUAL --------------
+// Two explicit, separate entry points -- never one unrestricted "update"
+// function -- so PLAN and ACTUAL responsibilities cannot accidentally
+// cross paths at the code level, not just by convention.
+//
+// createConstructionActivity / updateConstructionActivityPlan: PLAN fields
+// only (activity/plannedQuantity/unit/weight) -- PROJECT_MANAGER territory.
+export function createConstructionActivity(projectId, { activity, plannedQuantity, unit, weight }) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  if (!(plannedQuantity > 0)) {
+    throw new Error('Planned Quantity must be greater than zero.');
+  }
+  const record = {
+    // Date.now() alone can collide if two activities are created within
+    // the same millisecond (e.g. rapid sequential calls, or a fast test
+    // suite) -- the random suffix guarantees a unique id even then.
+    id: `${projectId}-con-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    activity,
+    plannedQuantity,
+    unit,
+    weight,
+    // Initial ACTUAL state -- a brand-new PLAN item has no site progress
+    // yet. This is the ONLY place actualQuantity/history are set by a PLAN
+    // operation; every operation after this goes through
+    // updateConstructionActivity (ACTUAL-only) instead.
+    actualQuantity: 0,
+    history: [],
+    updatedAt: new Date().toISOString(),
+  };
+  ops.constructionActivities = [...ops.constructionActivities, record];
+  return record;
+}
+
+export function updateConstructionActivityPlan(projectId, activityId, { activity, plannedQuantity, unit, weight }) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  const current = ops.constructionActivities.find((a) => a.id === activityId);
+  if (!current) return null;
+  if (plannedQuantity !== undefined && !(plannedQuantity > 0)) {
+    throw new Error('Planned Quantity must be greater than zero.');
+  }
+  const patch = {};
+  if (activity !== undefined) patch.activity = activity;
+  if (plannedQuantity !== undefined) patch.plannedQuantity = plannedQuantity;
+  if (unit !== undefined) patch.unit = unit;
+  if (weight !== undefined) patch.weight = weight;
+  // Structural guarantee, not just convention: only the four PLAN fields
+  // above are ever assigned here -- actualQuantity/history are copied
+  // through UNCHANGED via the spread, never touched by this function,
+  // however the caller's object is shaped.
+  ops.constructionActivities = ops.constructionActivities.map((a) => (a.id === activityId ? { ...a, ...patch, updatedAt: new Date().toISOString() } : a));
+  return ops.constructionActivities.find((a) => a.id === activityId) ?? null;
+}
+
 // --- FT-5 A6: Construction activity update, with validation ----------------
 // Thrown errors are business-rule violations the UI is expected to catch
 // and display -- they are not bugs.

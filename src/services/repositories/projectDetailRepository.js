@@ -29,6 +29,8 @@ import {
   updateHseDocument as storeUpdateHseDocument,
   createProcurementMilestone as storeCreateProcurementMilestone,
   updateProcurementMilestone as storeUpdateProcurementMilestone,
+  createConstructionActivity as storeCreateConstructionActivity,
+  updateConstructionActivityPlan as storeUpdateConstructionActivityPlan,
   updateConstructionActivity as storeUpdateConstructionActivity,
   assignUser as storeAssignUser,
   setProgressWeights as storeSetWeights,
@@ -119,6 +121,21 @@ export async function updateProcurementMilestone(projectId, milestoneId, patch) 
 
 export async function getConstructionActivities(projectId) {
   return isLocalMode ? (getOperations(projectId)?.constructionActivities ?? []) : fb.getConstructionActivities(projectId);
+}
+
+// Master Prompt #3, Section 4: PM PLAN capability. A brand-new activity
+// starts at actualQuantity=0/history=[] -- it is immediately visible to
+// the Progress Engine (Construction Progress = 0/plannedQuantity = 0%
+// until Site Manager records the first actual result).
+export async function createConstructionActivity(projectId, activity) {
+  return isLocalMode ? storeCreateConstructionActivity(projectId, activity) : fb.createConstructionActivity(projectId, activity);
+}
+
+// Master Prompt #3, Section 4: PLAN-only edit. Never touches
+// actualQuantity/history, regardless of what the caller passes -- both
+// backends only ever read the four named PLAN fields off the patch.
+export async function updateConstructionActivityPlan(projectId, activityId, patch) {
+  return isLocalMode ? storeUpdateConstructionActivityPlan(projectId, activityId, patch) : fb.updateConstructionActivityPlan(projectId, activityId, patch);
 }
 
 // FT-5 A6: throws on negative Actual Quantity or a zero/negative Planned
