@@ -155,7 +155,20 @@ service cloud.firestore {
         // diff().affectedKeys(), not just by hiding the inputs in the UI:
         // a SITE_MANAGER update that touches any PLAN field is rejected
         // outright, even if attempted via a direct Firestore write.
-        allow create: if hasRole(['SUPER_ADMIN', 'PROJECT_MANAGER']) && isAssignedToProject(projectId);
+        // Master Prompt #3 R1, Finding 2: creation-time PLAN ownership
+        // enforcement. Being assigned + holding PROJECT_MANAGER was
+        // previously sufficient to create ANY document shape -- nothing
+        // stopped a PM from creating a construction activity with
+        // actualQuantity already populated or a non-empty history,
+        // bypassing the ACTUAL ownership boundary at the moment of
+        // creation (the application/service layer always initializes
+        // actualQuantity: 0 and history: [], but Firestore Rules must not
+        // rely on that alone). SUPER_ADMIN keeps its existing, unrestricted
+        // administrative override.
+        allow create: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.actualQuantity == 0
+              && request.resource.data.history.size() == 0);
         // Master Prompt #3, Section 13/14: symmetric field-level
         // restriction for BOTH roles, not just SITE_MANAGER as before --
         // a PROJECT_MANAGER update that touches actualQuantity/history is

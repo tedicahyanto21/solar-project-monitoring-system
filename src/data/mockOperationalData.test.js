@@ -104,8 +104,8 @@ describe('createConstructionActivity (Master Prompt #3, Section 4: PM PLAN capab
   });
 
   it('Planned Quantity must be greater than zero -- validation preserved for the create path too', () => {
-    expect(() => createConstructionActivity(mp3ProjectId, { activity: 'Invalid', plannedQuantity: 0, unit: 'units', weight: 5 })).toThrow(/greater than zero/);
-    expect(() => createConstructionActivity(mp3ProjectId, { activity: 'Invalid', plannedQuantity: -5, unit: 'units', weight: 5 })).toThrow(/greater than zero/);
+    expect(() => createConstructionActivity(mp3ProjectId, { activity: 'Invalid', plannedQuantity: 0, unit: 'units', weight: 5 })).toThrow('Planned Quantity must be greater than zero.');
+    expect(() => createConstructionActivity(mp3ProjectId, { activity: 'Invalid', plannedQuantity: -5, unit: 'units', weight: 5 })).toThrow('Planned Quantity must be greater than zero.');
   });
 });
 
@@ -140,8 +140,8 @@ describe('updateConstructionActivityPlan (Master Prompt #3, Section 4: PM PLAN e
 
   it('Planned Quantity validation is preserved on the edit path too', () => {
     const created = createConstructionActivity(mp3ProjectId, { activity: 'Validation Check', plannedQuantity: 100, unit: 'units', weight: 10 });
-    expect(() => updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: 0 })).toThrow(/greater than zero/);
-    expect(() => updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: -10 })).toThrow(/greater than zero/);
+    expect(() => updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: 0 })).toThrow('Planned Quantity must be greater than zero.');
+    expect(() => updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: -10 })).toThrow('Planned Quantity must be greater than zero.');
   });
 });
 
@@ -178,5 +178,41 @@ describe('Master Prompt #3, Section 18: Progress Engine result is unaffected by 
     createConstructionActivity(mp3ProjectId, { activity: 'Fresh Item', plannedQuantity: 1000, unit: 'units', weight: 1000 });
     const after = await getProjectProgress(mp3ProjectId);
     expect(after.component.construction).toBeLessThanOrEqual(before.component.construction);
+  });
+});
+
+// Master Prompt #3, Corrective Revision #1, Finding 2: creation-time PLAN
+// ownership enforcement. The application/service layer's own contract
+// (createConstructionActivity ALWAYS initializes actualQuantity: 0 and
+// history: []) is what the tightened firestore.rules `create` clause
+// depends on -- these tests confirm that contract holds at the code level
+// on every call, which is the same initial-state shape the Firestore rule
+// checks for (request.resource.data.actualQuantity == 0 &&
+// request.resource.data.history.size() == 0). The rule ITSELF was not
+// executable here -- see the final report's Known Limitations for why.
+describe('Master Prompt #3 R1, Finding 2: PLAN creation always initializes ACTUAL to the exact state the tightened Firestore rule expects', () => {
+  it('Test B -- a newly created construction activity ALWAYS has actualQuantity: 0 and history: [], regardless of what PLAN fields were supplied', () => {
+    const created = createConstructionActivity(mp3ProjectId, { activity: 'Rule Contract Check', plannedQuantity: 250, unit: 'meters', weight: 30 });
+    expect(created.actualQuantity).toBe(0);
+    expect(created.history).toEqual([]);
+    expect(Array.isArray(created.history)).toBe(true);
+  });
+
+  it('Test C (application-level equivalent) -- createConstructionActivity has no parameter through which a caller could set actualQuantity or history at creation time', () => {
+    // Mirrors the Firestore rule's intent at the code level: even if a
+    // caller attempts to pass actualQuantity/history alongside the PLAN
+    // fields, the function's destructuring signature only reads
+    // {activity, plannedQuantity, unit, weight} -- anything else supplied
+    // is silently ignored, never assigned to the created record.
+    const created = createConstructionActivity(mp3ProjectId, {
+      activity: 'Attempted ACTUAL Injection',
+      plannedQuantity: 100,
+      unit: 'units',
+      weight: 10,
+      actualQuantity: 999,
+      history: [{ date: '2026-01-01', actualQuantity: 999 }],
+    });
+    expect(created.actualQuantity).toBe(0);
+    expect(created.history).toEqual([]);
   });
 });
