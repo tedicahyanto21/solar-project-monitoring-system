@@ -7,6 +7,7 @@ import ProjectFilters from '../../components/projects/ProjectFilters';
 import ProjectListView from '../../components/projects/ProjectListView';
 import ProjectFormDialog from '../../components/projects/ProjectFormDialog';
 import { getProjects, createProject, updateProject, duplicateProjectRecord } from '../../services/repositories/projectRepository';
+import { setProjectManager } from '../../services/repositories/projectDetailRepository';
 import { getProjectProgress, getScheduleStatus } from '../../services/repositories/progressRepository';
 import { useAuth } from '../../context/AuthContext';
 import { ROLES } from '../../constants/roles';
@@ -130,14 +131,28 @@ export default function ProjectsPage() {
     if (!canManageProject) return;
     setFormError('');
     try {
+      let savedProjectId;
       if (editingProject) {
         const updated = await updateProject(editingProject.id, values);
         setProjects((prev) => prev.map((p) => (p.id === editingProject.id ? { ...p, ...updated } : p)));
         notify(`${values.projectName} updated successfully.`);
+        savedProjectId = editingProject.id;
       } else {
         const newProject = await createProject(values);
         setProjects((prev) => [newProject, ...prev]);
         notify(`${newProject.projectName} created successfully.`);
+        savedProjectId = newProject.id;
+      }
+      // Master Prompt #4, Finding #1: the Project Manager selected in this
+      // form and the PROJECT_MANAGER team assignment are kept in sync
+      // through the SAME domain operation TeamTab uses (setProjectManager)
+      // -- not a second, independent write to the assignments record.
+      if (values.projectManagerId) {
+        await setProjectManager(
+          savedProjectId,
+          { userId: values.projectManagerId, name: values.projectManager },
+          profile?.userId ?? profile?.uid ?? profile?.id
+        );
       }
       setDialogOpen(false);
     } catch (err) {

@@ -38,6 +38,8 @@ import {
 } from '../../data/mockOperationalData';
 import * as fb from '../firebase/projectDetailService';
 import { validateAssignable } from './userRepository';
+import { updateProject as updateProjectRecord } from './projectRepository';
+import { ROLES } from '../../constants/roles';
 
 export async function getMilestones(projectId) {
   // Mock-only -- see file header KNOWN GAP.
@@ -169,7 +171,35 @@ export async function getAssignments(projectId) {
 // FT-7 Part C: assignment eligibility (exists, ACTIVE, correct role) is
 // validated HERE -- at the repository boundary -- not just filtered out of
 // the UI picker, regardless of which backend is active.
+// Master Prompt #4, Finding #1: PM identity consistency. This is the ONE
+// domain operation for changing who the Project Manager is -- both a
+// direct PROJECT_MANAGER assignment (via assignUser below, e.g. from
+// TeamTab) and a projectManagerId change from Project Master's Add/Edit
+// form (ProjectsPage.jsx) go through this SAME function, so
+// project.projectManagerId and the projectAssignments PROJECT_MANAGER
+// record can never silently drift apart. The assignment record remains
+// authoritative for AUTHORIZATION (Firestore rules' isAssignedToProject
+// and hasRole checks read the user's own profile + assignment existence,
+// never projectManagerId); projectManagerId is a denormalized convenience
+// field on the project master document for display/filtering only.
+export async function setProjectManager(projectId, { userId, name }, assignedBy) {
+  const check = await validateAssignable(userId, ROLES.PROJECT_MANAGER);
+  if (!check.ok) {
+    throw new Error(check.reason);
+  }
+  const assignments = isLocalMode
+    ? storeAssignUser(projectId, ROLES.PROJECT_MANAGER, { userId, name }, assignedBy)
+    : await fb.assignUser(projectId, ROLES.PROJECT_MANAGER, { userId, name }, assignedBy);
+  // Sync the denormalized fields on the project master record. This never
+  // touches any other project field (targeted update, per FT-9A Section 10).
+  await updateProjectRecord(projectId, { projectManagerId: userId, projectManager: name });
+  return assignments;
+}
+
 export async function assignUser(projectId, role, { userId, name }, assignedBy) {
+  if (role === ROLES.PROJECT_MANAGER) {
+    return setProjectManager(projectId, { userId, name }, assignedBy);
+  }
   const check = await validateAssignable(userId, role);
   if (!check.ok) {
     throw new Error(check.reason);

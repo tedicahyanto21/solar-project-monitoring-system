@@ -14,7 +14,6 @@ import {
   HEALTH_STATUSES,
   CAPACITY_UNITS,
   REGIONS,
-  PROJECT_MANAGERS,
   initialProjects,
   createBlankProject,
   duplicateProject,
@@ -45,9 +44,20 @@ export async function createProject(formValues) {
 // worked this way since Sprint FT-4) -- this just echoes the patch back so
 // the calling page's existing local-state merge behaves identically to
 // before; FIREBASE MODE performs the actual targeted Firestore update.
+// Master Prompt #4, Finding #1 fix: LOCAL MODE previously only ECHOED the
+// patch back (`{ id: projectId, ...patch }`) without actually mutating the
+// underlying initialProjects array -- harmless for the original call site
+// (ProjectsPage.jsx merges the echo into its own React state), but WRONG
+// for any caller that re-reads via getProjectById afterward expecting to
+// see the change (as projectDetailRepository.setProjectManager does for
+// PM identity sync). Now genuinely persists in-memory, for this session,
+// consistent with how mockOperationalData's per-project store mutates.
 export async function updateProject(projectId, patch) {
   if (isLocalMode) {
-    return { id: projectId, ...patch };
+    const project = initialProjects.find((p) => p.id === projectId);
+    if (!project) return null;
+    Object.assign(project, patch);
+    return { ...project };
   }
   return firebaseProjects.updateProject(projectId, patch);
 }
@@ -61,4 +71,4 @@ export async function duplicateProjectRecord(project) {
 
 // Reference data -- re-exported as-is for now. These become Firestore-backed
 // lookups (or remain static config) when the real backend lands.
-export { PROJECT_STATUSES, HEALTH_STATUSES, CAPACITY_UNITS, REGIONS, PROJECT_MANAGERS };
+export { PROJECT_STATUSES, HEALTH_STATUSES, CAPACITY_UNITS, REGIONS };

@@ -103,6 +103,24 @@ tests against Firestore -- that would require the Firebase Emulator Suite,
 which could not be run in this repository's development sandbox (see
 Known Limitations).
 
+## Project Manager identity
+
+**Source of truth:** `projects/{projectId}/projectAssignments/{userId}` (role
+`PROJECT_MANAGER`) is authoritative for authorization -- Firestore rules and
+`isAssignedToProject()` checks read from assignments, never from
+`project.projectManagerId`. `project.projectManagerId` (plus the denormalized
+`project.projectManager` name) is a convenience field on the project master
+document for display and filtering.
+
+**Synchronization (Master Prompt #4, Finding #1):** both representations are
+changed through exactly one domain operation --
+`projectDetailRepository.setProjectManager(projectId, {userId, name},
+assignedBy)`. `assignUser(projectId, role, ...)` delegates to it whenever
+`role === PROJECT_MANAGER` (the path TeamTab uses), and the Project Master
+Add/Edit form (`ProjectsPage.jsx`) calls it directly after saving the project.
+There is no second, independent code path that writes only one side of the
+pair.
+
 ## Progress Engine architecture
 
 **Calculation ownership is centralized and non-negotiable.**
@@ -191,11 +209,6 @@ emulator. Treat it as a starting point for review, not an approved policy.
 - User deactivation is enforced at sign-in time, not in real time -- a
   user deactivated while already logged in elsewhere is not force-logged-
   out until their session's auth state next changes.
-- There are two independent, unreconciled mechanisms for "who is the
-  Project Manager": `project.projectManagerId` (set via Add/Edit Project)
-  and the separate `projects/{id}/assignments` PROJECT_MANAGER role
-  assignment (set via the Team tab). Both are individually correct and
-  userId-based, but nothing keeps them in sync with each other.
 
 ## Design notes
 
