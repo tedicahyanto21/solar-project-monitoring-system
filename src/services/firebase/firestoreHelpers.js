@@ -5,7 +5,7 @@
 // this is the ONE place that talks to the Firestore SDK directly, so
 // error handling (Part H) and query patterns stay consistent everywhere.
 import {
-  collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, query, where, orderBy,
+  collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, query, where, orderBy, writeBatch,
 } from 'firebase/firestore';
 import { db } from './config';
 
@@ -61,6 +61,22 @@ export async function updateDocById(path, id, patch) {
     await updateDoc(ref, patch);
     return getOneDoc(path, id);
   });
+}
+
+// Master Prompt #4 corrective: a document reference, exposed so a caller
+// can batch multiple writes across paths/collections into one atomic unit
+// (see docRef/newBatch/commitBatch below) instead of the sequential
+// createDoc/updateDocById calls above, which cannot be combined atomically.
+export function docRef(path, id) {
+  return doc(db, ...path.split('/'), id);
+}
+
+export function newBatch() {
+  return writeBatch(db);
+}
+
+export async function commitBatch(batch) {
+  return guard('commit batch write', () => batch.commit());
 }
 
 export { where, orderBy };
