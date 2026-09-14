@@ -5,9 +5,9 @@
 // procurementMilestones, constructionActivities, commissioningItems.
 // Shape matches Database Design SPMS-DOC-06 and the FT-8 collection
 // architecture (firestorePaths.js).
-import { getAllDocs, getOneDoc, createDoc, updateDocById, docRef, newBatch, commitBatch } from './firestoreHelpers';
+import { getAllDocs, getOneDoc, createDoc, updateDocById, deleteDocById, FirestoreOperationError } from './firestoreHelpers';
 import { COLLECTIONS, PROJECT_SUBCOLLECTIONS } from './firestorePaths';
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from './config';
 
 function subPath(projectId, subcollection) {
@@ -20,55 +20,60 @@ export async function getAssignments(projectId) {
   return getAllDocs(subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS));
 }
 
-// Master Prompt #4 corrective (PM assignment identity): pure, Firebase-free
-// resolution logic -- exported so it's unit-testable without a Firestore
-// connection (same pattern as projectService.sanitizeUpdatePatch). The
-// invariant is: document ID === userId, always. Reassigning `role` to a
-// different user must NEVER reuse the previous holder's document ID (that
-// was the bug -- it produced projectAssignments/{oldUserId} with
-// userId=newUserId, which Firestore's request.auth.uid-keyed authorization
-// checks do not recognize). Instead the previous holder's doc (same role,
-// different id) is flagged as stale so the caller deletes it, and the new
-// doc is always written at ID=userId.
-export function resolveAssignmentWrite(existingAssignments, role, { userId, name }, assignedBy) {
-  const staleHolder = (existingAssignments || []).find((a) => a.role === role && a.id !== userId);
-  return {
-    staleHolderId: staleHolder ? staleHolder.id : null,
-    data: { role, userId, name, assignedAt: new Date().toISOString(), assignedBy },
-  };
-}
-
 export async function assignUser(projectId, role, { userId, name }, assignedBy) {
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS);
   const existing = await getAllDocs(path);
-  const { staleHolderId, data } = resolveAssignmentWrite(existing, role, { userId, name }, assignedBy);
-  const batch = newBatch();
-  if (staleHolderId) {
-    batch.delete(docRef(path, staleHolderId));
+  const current = existing.find((a) => a.role === role);
+  const data = { role, userId, name, assignedAt: new Date().toISOString(), assignedBy };
+  // MP#4 Corrective Fix: the assignment document ID MUST equal userId --
+  // Firestore authorization checks assignment existence at
+  // projectAssignments/{request.auth.uid}, so a document whose ID is the
+  // PREVIOUS assignee's userId (with the new assignee's userId only in the
+  // field) would leave the new assignee with NO matching document at their
+  // own UID, breaking their access entirely, while the stale doc under the
+  // old UID would incorrectly still exist. Reassigning to a DIFFERENT user
+  // now deletes the old (wrongly-keyed) document and creates a fresh one
+  // at the correct ID, rather than updating the old document in place.
+  if (current && current.id === userId) {
+    await updateDocById(path, current.id, data);
+  } else {
+    if (current) {
+      await deleteDocById(path, current.id);
+    }
+    await createDoc(path, data, userId);
   }
-  batch.set(docRef(path, userId), data);
-  await commitBatch(batch);
   return getAllDocs(path);
 }
 
-// Master Prompt #4 corrective, Section 8: setting the Project Manager
-// touches two documents -- the PROJECT_MANAGER assignment doc (identity/
-// authorization, see resolveAssignmentWrite above) and the project
-// master's projectManagerId/projectManager fields (denormalized display
-// convenience) -- that represent ONE logical "set project manager"
-// operation. Both writes (plus the stale prior-PM delete, if any) go into a
-// single Firestore batch so they are never observed half-applied.
-export async function setProjectManagerAtomic(projectId, role, { userId, name }, assignedBy) {
+// MP#4 Corrective Fix, Section 8: PM reassignment touches two related
+// documents (the projectAssignments record and projects/{id}.
+// projectManagerId) -- this performs both as ONE atomic writeBatch commit,
+// using the SDK's existing batch primitive (no new infrastructure layer).
+// Either both writes land or neither does; there is no window where one
+// side reflects the new PM and the other still reflects the old one.
+export async function setProjectManager(projectId, { userId, name }, assignedBy) {
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS);
   const existing = await getAllDocs(path);
-  const { staleHolderId, data } = resolveAssignmentWrite(existing, role, { userId, name }, assignedBy);
-  const batch = newBatch();
-  if (staleHolderId) {
-    batch.delete(docRef(path, staleHolderId));
+  const current = existing.find((a) => a.role === 'PROJECT_MANAGER');
+  const now = new Date().toISOString();
+
+  try {
+    const batch = writeBatch(db);
+    if (current && current.id !== userId) {
+      batch.delete(doc(db, ...path.split('/'), current.id));
+    }
+    batch.set(doc(db, ...path.split('/'), userId), {
+      role: 'PROJECT_MANAGER', userId, name, assignedAt: now, assignedBy,
+    });
+    batch.update(doc(db, COLLECTIONS.PROJECTS, projectId), {
+      projectManagerId: userId, projectManager: name, updatedAt: now,
+    });
+    await batch.commit();
+  } catch (err) {
+    console.error('Firestore atomic PM assignment failed:', err);
+    throw new FirestoreOperationError('assign Project Manager', err);
   }
-  batch.set(docRef(path, userId), data);
-  batch.update(docRef(COLLECTIONS.PROJECTS, projectId), { projectManagerId: userId, projectManager: name, updatedAt: serverTimestamp() });
-  await commitBatch(batch);
+
   return getAllDocs(path);
 }
 

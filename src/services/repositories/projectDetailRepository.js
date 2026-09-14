@@ -182,27 +182,24 @@ export async function getAssignments(projectId) {
 // and hasRole checks read the user's own profile + assignment existence,
 // never projectManagerId); projectManagerId is a denormalized convenience
 // field on the project master document for display/filtering only.
-// Master Prompt #4 corrective, Section 8: in Firebase mode the assignment
-// write and the project master sync below are no longer two sequential
-// awaited calls -- fb.setProjectManagerAtomic performs both (plus deleting
-// any stale prior-PM assignment doc, see projectDetailService.js) as ONE
-// Firestore batch, so they can never be observed half-applied. Local Mode
-// has no batch primitive to reuse (it's an in-memory store, not a
-// database) and its two-step sequence was never the source of the identity
-// bug this corrective targets, so it is intentionally left as-is.
 export async function setProjectManager(projectId, { userId, name }, assignedBy) {
   const check = await validateAssignable(userId, ROLES.PROJECT_MANAGER);
   if (!check.ok) {
     throw new Error(check.reason);
   }
+  // MP#4 Corrective Fix, Section 8: in FIREBASE MODE, the assignment write
+  // and the project.projectManagerId sync happen as ONE atomic batch (see
+  // projectDetailService.setProjectManager) -- not two separate calls that
+  // could leave one written and the other not. LOCAL MODE has no
+  // equivalent partial-failure window (synchronous in-memory mutation, no
+  // network round trip between the two updates), so the existing two-step
+  // sequence there is already effectively atomic and is left unchanged.
   if (isLocalMode) {
     const assignments = storeAssignUser(projectId, ROLES.PROJECT_MANAGER, { userId, name }, assignedBy);
-    // Sync the denormalized fields on the project master record. This never
-    // touches any other project field (targeted update, per FT-9A Section 10).
     await updateProjectRecord(projectId, { projectManagerId: userId, projectManager: name });
     return assignments;
   }
-  return fb.setProjectManagerAtomic(projectId, ROLES.PROJECT_MANAGER, { userId, name }, assignedBy);
+  return fb.setProjectManager(projectId, { userId, name }, assignedBy);
 }
 
 export async function assignUser(projectId, role, { userId, name }, assignedBy) {
