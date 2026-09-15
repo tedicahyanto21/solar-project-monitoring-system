@@ -188,7 +188,13 @@ decision, not oversight.
 `firestore.rules` is a draft: role-based, project-assignment-scoped access
 control consistent with the Firestore Security Design
 (`docs/07_Security_Design/`), including source-role validation on Cost
-Transactions (no impersonation) and read-only access for BOD. It has not
+Transactions (no impersonation) and read-only access for BOD. **MP#5 release
+audit found and fixed two over-broad access findings**: `projectAssignments`
+writes previously allowed any PROJECT_MANAGER to write an assignment for
+*any* project (not just their own); `costTransactions`/`paymentProjections`
+reads previously gave PROJECT_MANAGER portfolio-wide financial visibility
+instead of scoping to their assigned projects. Both are now scoped via the
+same `isAssignedToProject()` pattern used everywhere else. It has not
 been reviewed by a second engineer, deployed, or tested against the
 emulator. Treat it as a starting point for review, not an approved policy.
 

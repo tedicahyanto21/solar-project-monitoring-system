@@ -120,7 +120,16 @@ service cloud.firestore {
 
       match /projectAssignments/{userId} {
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM']) || isAssignedToProject(projectId);
-        allow write: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'PROJECT_MANAGER']);
+        // MP#5 Finding: this was previously `hasRole(['SUPER_ADMIN',
+        // 'HEAD_PM', 'PROJECT_MANAGER'])` with NO isAssignedToProject
+        // check at all -- meaning ANY user whose global profile role is
+        // PROJECT_MANAGER could write an assignment document for ANY
+        // project, including ones they have no relationship to, and
+        // could write to any {userId} path (impersonating another
+        // user's assignment). Scoped to the project the PM is actually
+        // assigned to, matching every other subcollection's PM-write
+        // pattern (engineeringDocuments, procurementMilestones, etc.).
+        allow write: if hasRole(['SUPER_ADMIN', 'HEAD_PM']) || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId));
       }
 
       match /progressHistory/{snapshotId} {
@@ -196,7 +205,14 @@ service cloud.firestore {
       }
 
       match /costTransactions/{transactionId} {
-        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'PROJECT_MANAGER', 'FINANCE']) || isAssignedToProject(projectId);
+        // MP#5 Finding: PROJECT_MANAGER was previously in the blanket
+        // hasRole read list (portfolio-wide, like HEAD_PM/BOD elsewhere),
+        // exposing financial data for projects a PM has no relationship
+        // to. Removed from the blanket list -- a PM's read access now
+        // only comes through isAssignedToProject, same as every other
+        // subcollection's PM read scope. Legitimate access (their own
+        // assigned projects) is unaffected.
+        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE']) || isAssignedToProject(projectId);
         // FT-5 B2/B9: SCM/HC/FINANCE create; sourceRole must equal the
         // caller's own role (no impersonation); POSTED transactions are
         // never deleted, only voided (handled as an update, not delete).
@@ -216,7 +232,9 @@ service cloud.firestore {
       }
 
       match /paymentProjections/{projectionId} {
-        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'PROJECT_MANAGER', 'FINANCE']) || isAssignedToProject(projectId);
+        // MP#5 Finding: same over-broad PROJECT_MANAGER read scope as
+        // costTransactions above -- fixed identically.
+        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE']) || isAssignedToProject(projectId);
         // FT-5 B2/B5: SCM and Super Admin only.
         allow write: if hasRole(['SUPER_ADMIN', 'SCM']) && isAssignedToProject(projectId) || isSuperAdmin();
       }
