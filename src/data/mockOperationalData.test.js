@@ -1,4 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+// MP#4 R1 Test Reliability Corrective: this file is otherwise pure
+// mockOperationalData-only testing (safe by construction, since it never
+// imports the isLocalMode-branching repository layer) -- EXCEPT for one
+// test near the end that dynamically imports progressRepository.js to
+// confirm cross-module Progress Engine integration. That dynamic import
+// DOES go through the isLocalMode branch, so without this same
+// deterministic override it would silently hit real Firestore on any
+// machine with a configured .env (confirmed: this exact test fails with
+// "FirebaseError: Failed to get document because the client is offline"
+// when a real-looking .env is present but unreachable/fake).
+vi.mock('../services/firebase/config', () => ({ isLocalMode: true }));
 import { initialProjects } from './mockProjects';
 import { getOperations, updateConstructionActivity, createConstructionActivity, updateConstructionActivityPlan } from './mockOperationalData';
 

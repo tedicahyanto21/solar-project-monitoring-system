@@ -97,11 +97,26 @@ npm run preview  # preview a production build
 
 `npm run test` runs Vitest unit tests against the pure calculation/business
 -rule functions (Progress Engine, Cost Control ledger logic, HC/Finance
-double-counting prevention, Weekly/Monthly issue period rule). These do
-not require Firebase and currently all pass. There are no integration
-tests against Firestore -- that would require the Firebase Emulator Suite,
-which could not be run in this repository's development sandbox (see
-Known Limitations).
+double-counting prevention, Weekly/Monthly issue period rule, PM assignment
+identity) and never requires Firebase to pass.
+
+**Firebase isolation (MP#4 R1 Test Reliability Corrective):** repository
+tests that exercise functions branching on `isLocalMode` (`progressRepository.test.js`,
+`projectDetailRepository.test.js`, and the one cross-module test in
+`mockOperationalData.test.js`) explicitly `vi.mock('.../firebase/config', () =>
+({ isLocalMode: true }))` at the top of the file. This pins them to the
+deterministic mock store regardless of whatever `.env` happens to be
+configured on the machine running the tests -- without it, a developer or
+CI runner with a real Firebase project configured would have these tests
+silently attempt real Firestore reads/writes against whatever projects and
+users actually exist there (this was confirmed to reproduce the exact
+`TypeError: Cannot read properties of undefined` / `NOT_FOUND` failures
+this corrective task fixed). Firebase SERVICE tests
+(`projectDetailService.test.js`, `projectService.test.js`) instead mock the
+Firestore SDK directly and intentionally exercise the Firebase-mode code
+path in isolation -- neither approach ever touches a real Firebase project.
+`npm test` is safe to run repeatedly on any machine, with or without a
+configured `.env`, and never modifies real Firestore data.
 
 ## Project Manager identity
 

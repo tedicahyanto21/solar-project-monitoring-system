@@ -1,4 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
+// MP#4 R1 Test Reliability Corrective: force LOCAL MODE deterministically
+// for this entire test file, regardless of whatever .env happens to be
+// configured on the machine running the tests. Without this, a developer
+// (or CI runner) with a real Firebase project configured would have every
+// function below silently branch into REAL Firestore calls against
+// whatever projects/users actually exist there -- which is exactly what
+// caused the reported failures (proj-004 not found, no real ACTIVE
+// SITE_MANAGER). Repository/business-logic tests must be deterministic
+// and environment-independent; only the dedicated Firebase SERVICE tests
+// (projectDetailService.test.js) intentionally exercise the Firebase-mode
+// code path, and they do so against a fully mocked Firestore SDK, never a
+// real project.
+vi.mock('../firebase/config', () => ({ isLocalMode: true }));
 import {
   isValidWeightTotal,
   calculateEngineeringProgress,

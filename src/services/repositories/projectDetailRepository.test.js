@@ -1,4 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+// MP#4 R1 Test Reliability Corrective: force LOCAL MODE deterministically,
+// exactly as in progressRepository.test.js -- these PM-identity/assignment
+// tests must exercise the mock store, never whatever real Firebase project
+// happens to be configured via .env on the machine running the tests
+// (that was the actual cause of the reported "proj-004 not found" and
+// "no ACTIVE SITE_MANAGER" failures: the repository functions below
+// correctly branch on isLocalMode, but nothing was pinning that value
+// during the test run).
+vi.mock('../firebase/config', () => ({ isLocalMode: true }));
 import { setProjectManager, assignUser, getAssignments } from './projectDetailRepository';
 import { getProjectById } from './projectRepository';
 import { getUsers } from './userRepository';
