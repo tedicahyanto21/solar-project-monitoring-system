@@ -34,7 +34,11 @@ export default function ProjectsPage() {
     let cancelled = false;
     setLoadingProjects(true);
     setLoadError('');
-    getProjects()
+    // C-01A: scope the project list to the CURRENT user's own assignments
+    // -- this is the actual fix for "PM-A could see PM-B's project" (the
+    // list was previously unfiltered for every role). SUPER_ADMIN/HEAD_PM/
+    // BOD continue to see the full portfolio, unchanged.
+    getProjects({ userId: profile?.userId ?? profile?.uid ?? profile?.id, role: profile?.role })
       .then(async (data) => {
         // Overall Progress and Schedule Status are computed by
         // progressRepository, never typed or stored ad hoc here (Sprint
@@ -65,7 +69,7 @@ export default function ProjectsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile?.userId, profile?.uid, profile?.id, profile?.role]);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');

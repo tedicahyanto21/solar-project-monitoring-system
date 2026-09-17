@@ -293,15 +293,63 @@ export function reopenIssue(projectId, issueId) {
   return updateIssue(projectId, issueId, { status: 'OPEN', closedAt: null, closedBy: null });
 }
 
+// C-01A: dedicated, non-additive PM assignment for the mock store --
+// PROJECT_MANAGER must always remain exactly one holder, so it cannot go
+// through the additive assignUser above (which is correct for SITE_MANAGER/
+// ENGINEERING/HSE, but would let PM accumulate multiple holders too).
+// Removes ANY existing PROJECT_MANAGER row (regardless of which user held
+// it) before adding the new one, mirroring the delete-then-set pattern
+// projectDetailService.setProjectManager uses for Firebase.
+export function setProjectManagerAssignment(projectId, { userId, name }, assignedBy) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  const now = new Date().toISOString();
+  const withoutExistingPm = ops.assignments.filter((a) => a.role !== 'PROJECT_MANAGER');
+  ops.assignments = [...withoutExistingPm, { userId, name, role: 'PROJECT_MANAGER', assignedAt: now, assignedBy }];
+  return ops.assignments;
+}
+
+// C-01A: identity-based (role + userId), additive assignment. Previously
+// this found the existing row for a ROLE ALONE and overwrote it -- meaning
+// assigning a second SITE_MANAGER silently REPLACED the first one, making
+// "multiple Site Managers per project" structurally impossible even though
+// nothing about the underlying data shape required that limitation.
+//
+// New behavior:
+//   - same user, same role already exists -> update that row in place
+//     (e.g. refreshing the denormalized name).
+//   - a DIFFERENT user for a role that currently only has an "Unassigned"
+//     placeholder (the seed convention for an empty slot) -> replace the
+//     placeholder, since it was never a real assignment.
+//   - a DIFFERENT user for a role some OTHER real user already holds ->
+//     ADD a new row; the existing user's assignment is left untouched.
+// PROJECT_MANAGER never reaches this function -- projectDetailRepository
+// routes PM assignment through setProjectManager() instead, which keeps
+// its own single-PM-per-project invariant untouched by this change.
 export function assignUser(projectId, role, { userId, name }, assignedBy) {
   const ops = store.get(projectId);
   if (!ops) return null;
-  // Assignment reference is userId (Database Design SPMS-DOC-06, Section 6:
-  // projects/{projectId}/assignments/{userId}). `name` is a denormalized
-  // display convenience only -- userId is the canonical value.
-  ops.assignments = ops.assignments.map((a) =>
-    a.role === role ? { ...a, userId, name, assignedAt: new Date().toISOString(), assignedBy } : a
-  );
+  const now = new Date().toISOString();
+  const sameUserSameRole = ops.assignments.find((a) => a.role === role && a.userId === userId);
+  if (sameUserSameRole) {
+    ops.assignments = ops.assignments.map((a) =>
+      (a.role === role && a.userId === userId) ? { ...a, name, assignedAt: now, assignedBy } : a
+    );
+  } else {
+    const withoutPlaceholder = ops.assignments.filter((a) => !(a.role === role && a.name === 'Unassigned'));
+    ops.assignments = [...withoutPlaceholder, { userId, name, role, assignedAt: now, assignedBy }];
+  }
+  return ops.assignments;
+}
+
+// C-01A: remove one specific (role, userId) assignment -- the natural
+// counterpart to the additive assignUser above. Never used for
+// PROJECT_MANAGER (which always has exactly one holder, changed via
+// setProjectManager, never removed to zero).
+export function removeAssignment(projectId, role, userId) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  ops.assignments = ops.assignments.filter((a) => !(a.role === role && a.userId === userId));
   return ops.assignments;
 }
 

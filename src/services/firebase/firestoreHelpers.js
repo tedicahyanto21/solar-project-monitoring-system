@@ -5,7 +5,7 @@
 // this is the ONE place that talks to the Firestore SDK directly, so
 // error handling (Part H) and query patterns stay consistent everywhere.
 import {
-  collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy,
+  collection, collectionGroup, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy,
 } from 'firebase/firestore';
 import { db } from './config';
 
@@ -68,6 +68,22 @@ export async function deleteDocById(path, id) {
     const ref = doc(db, ...path.split('/'), id);
     await deleteDoc(ref);
     return { id, deleted: true };
+  });
+}
+
+// C-01A: collection-group query -- reads across ALL subcollections with
+// the given name regardless of parent path (e.g. every project's
+// `projectAssignments`). Returns each doc's own data PLUS the parent
+// document's ID (the projectId), since that is not otherwise recoverable
+// from the doc's own data/id. Requires a matching collection-group rule
+// in firestore.rules (see the `match /{path=**}/projectAssignments/...`
+// block) -- without one, Firestore denies ALL collection-group queries by
+// default, regardless of any per-path nested rule.
+export async function getCollectionGroupDocs(collectionId, ...queryConstraints) {
+  return guard(`read collectionGroup(${collectionId})`, async () => {
+    const ref = collectionGroup(db, collectionId);
+    const snap = await getDocs(queryConstraints.length ? query(ref, ...queryConstraints) : ref);
+    return snap.docs.map((d) => ({ id: d.id, parentId: d.ref.parent.parent?.id ?? null, ...d.data() }));
   });
 }
 

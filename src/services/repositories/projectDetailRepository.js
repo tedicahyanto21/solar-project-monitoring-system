@@ -33,6 +33,8 @@ import {
   updateConstructionActivityPlan as storeUpdateConstructionActivityPlan,
   updateConstructionActivity as storeUpdateConstructionActivity,
   assignUser as storeAssignUser,
+  setProjectManagerAssignment as storeSetProjectManagerAssignment,
+  removeAssignment as storeRemoveAssignment,
   setProgressWeights as storeSetWeights,
   recordProgressSnapshot as storeRecordSnapshot,
 } from '../../data/mockOperationalData';
@@ -195,7 +197,7 @@ export async function setProjectManager(projectId, { userId, name }, assignedBy)
   // network round trip between the two updates), so the existing two-step
   // sequence there is already effectively atomic and is left unchanged.
   if (isLocalMode) {
-    const assignments = storeAssignUser(projectId, ROLES.PROJECT_MANAGER, { userId, name }, assignedBy);
+    const assignments = storeSetProjectManagerAssignment(projectId, { userId, name }, assignedBy);
     await updateProjectRecord(projectId, { projectManagerId: userId, projectManager: name });
     return assignments;
   }
@@ -211,4 +213,15 @@ export async function assignUser(projectId, role, { userId, name }, assignedBy) 
     throw new Error(check.reason);
   }
   return isLocalMode ? storeAssignUser(projectId, role, { userId, name }, assignedBy) : fb.assignUser(projectId, role, { userId, name }, assignedBy);
+}
+
+// C-01A: removes one specific (role, userId) holder -- the counterpart to
+// the additive assignUser above, for multi-holder roles (SITE_MANAGER/
+// ENGINEERING/HSE). Deliberately not offered for PROJECT_MANAGER (always
+// exactly one; use assignUser/setProjectManager to change who holds it).
+export async function removeAssignment(projectId, role, userId) {
+  if (role === ROLES.PROJECT_MANAGER) {
+    throw new Error('Project Manager cannot be removed directly -- assign a replacement instead.');
+  }
+  return isLocalMode ? storeRemoveAssignment(projectId, role, userId) : fb.removeAssignment(projectId, role, userId);
 }

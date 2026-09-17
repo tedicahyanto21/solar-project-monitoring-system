@@ -118,6 +118,40 @@ path in isolation -- neither approach ever touches a real Firebase project.
 `npm test` is safe to run repeatedly on any machine, with or without a
 configured `.env`, and never modifies real Firestore data.
 
+## Project-level access control
+
+**C-01A (UAT correction):** a real Firebase UAT found that PROJECT_MANAGER
+(and by the same defect, SITE_MANAGER/ENGINEERING/HSE) could see every
+project in the portfolio, not just their own -- `getProjects()` and
+`getProjectById()` never scoped results by the caller's identity at all,
+and Project Detail had no independent access check, so a direct
+`/projects/{id}` URL bypassed even a correctly-filtered list.
+
+**Access model:** SUPER_ADMIN, HEAD_PM, and BOD retain portfolio-wide
+access (unchanged, existing design -- the Dashboard's portfolio
+aggregation, which calls these functions with no user context at all,
+is intentionally unaffected). Every other role only sees projects where
+they hold a `projectAssignments` entry: `projectRepository.getProjects(currentUser)`
+and `getProjectById(projectId, currentUser)` both take an optional
+`{userId, role}` and filter accordingly in both Local and Firebase Mode.
+Project Detail independently re-verifies assignment on load -- it does not
+trust that the list page filtered correctly, so a direct URL to an
+unauthorized project resolves to the same "Project not found" state as a
+nonexistent one (deliberately not confirming which).
+
+In Firebase Mode, "which projects is this user assigned to" is answered by
+a `collectionGroup('projectAssignments')` query filtered to the caller's
+own `userId` -- this requires a dedicated collection-group rule in
+`firestore.rules` (`match /{path=**}/projectAssignments/{userId}`), since a
+nested per-project rule does not automatically extend to collection-group
+reads.
+
+**Multiple assignments per role:** SITE_MANAGER, ENGINEERING, and HSE now
+support more than one holder per project (`projectDetailRepository.assignUser`
+is additive -- a second user for the same role is added, not replacing the
+first). PROJECT_MANAGER remains exactly one holder per project, changed
+only through `setProjectManager()`, which is unaffected by this change.
+
 ## Project Manager identity
 
 **Source of truth:** `projects/{projectId}/projectAssignments/{userId}` (role

@@ -9,6 +9,8 @@
 // there, not in this file.
 import { isLocalMode } from '../firebase/config';
 import * as firebaseProjects from '../firebase/projectService';
+import { getOperations } from '../../data/mockOperationalData';
+import { ROLES } from '../../constants/roles';
 import {
   PROJECT_STATUSES,
   HEALTH_STATUSES,
@@ -19,12 +21,56 @@ import {
   duplicateProject,
 } from '../../data/mockProjects';
 
-export async function getProjects() {
-  return isLocalMode ? initialProjects : firebaseProjects.getProjects();
+// C-01A: roles with legitimate portfolio-wide visibility -- unchanged from
+// the access model established across FT-1..MP#5 (Dashboard/BOD read
+// everything; HEAD_PM oversees the whole portfolio). Every OTHER role only
+// sees projects they are actually assigned to.
+const PORTFOLIO_WIDE_ROLES = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.BOD];
+
+function isAssignedInLocalMode(projectId, userId) {
+  return getOperations(projectId)?.assignments?.some((a) => a.userId === userId) ?? false;
 }
 
-export async function getProjectById(projectId) {
-  return isLocalMode ? (initialProjects.find((p) => p.id === projectId) ?? null) : firebaseProjects.getProjectById(projectId);
+// C-01A Access & Assignment Control: `currentUser` is OPTIONAL and
+// preserves the prior, unrestricted behavior when omitted -- this is what
+// progressRepository.getPortfolioSummary() (Dashboard aggregation, which
+// is intentionally portfolio-wide for every role per the existing
+// Dashboard design) continues to rely on unchanged. When ProjectsPage.jsx
+// (the Project Master list, the actual UAT-failing surface) supplies
+// `currentUser = { userId, role }`, results are scoped: a
+// PORTFOLIO_WIDE_ROLES caller still sees everything; anyone else sees only
+// projects where they hold a projectAssignments entry, in either backend.
+export async function getProjects(currentUser) {
+  if (!currentUser || PORTFOLIO_WIDE_ROLES.includes(currentUser.role)) {
+    return isLocalMode ? initialProjects : firebaseProjects.getProjects();
+  }
+  if (isLocalMode) {
+    return initialProjects.filter((p) => isAssignedInLocalMode(p.id, currentUser.userId));
+  }
+  const assignedIds = await firebaseProjects.getProjectIdsAssignedToUser(currentUser.userId);
+  if (assignedIds.length === 0) return [];
+  return firebaseProjects.getProjectsByIds(assignedIds);
+}
+
+// C-01A: same optional-currentUser pattern as getProjects above. This is
+// also the DIRECT-URL defense (Section 6 of the C-01A audit): even if a
+// user constructs /projects/{someOtherProjectId} directly, this check runs
+// independently of whatever the list page would have shown them -- it does
+// not rely on the user having gone through a correctly-filtered list
+// first. A denied project is returned as `null`, deliberately
+// indistinguishable from "does not exist" (Project Detail already has a
+// "Project not found" state for null -- reusing it avoids leaking whether
+// an unauthorized projectId is valid).
+export async function getProjectById(projectId, currentUser) {
+  const project = isLocalMode
+    ? (initialProjects.find((p) => p.id === projectId) ?? null)
+    : await firebaseProjects.getProjectById(projectId);
+  if (!project) return null;
+  if (!currentUser || PORTFOLIO_WIDE_ROLES.includes(currentUser.role)) return project;
+  const isAssigned = isLocalMode
+    ? isAssignedInLocalMode(projectId, currentUser.userId)
+    : (await firebaseProjects.getProjectIdsAssignedToUser(currentUser.userId)).includes(projectId);
+  return isAssigned ? project : null;
 }
 
 export async function createProject(formValues) {

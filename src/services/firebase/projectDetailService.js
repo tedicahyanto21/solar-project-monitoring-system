@@ -20,27 +20,49 @@ export async function getAssignments(projectId) {
   return getAllDocs(subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS));
 }
 
+// C-01A: identity-based (role + userId), additive assignment -- the same
+// fix as mockOperationalData.assignUser, and it SUPERSEDES the MP#4
+// Corrective "find by role, delete old ID, create new ID" logic entirely:
+// by keying the lookup on (role, userId) together instead of role alone,
+// this function never finds "some other user's" document to reassign in
+// the first place, so the document-ID-===-userId invariant holds by
+// construction, with no delete-then-recreate dance needed for the general
+// case. A DIFFERENT user for a role that currently only has an
+// "Unassigned" placeholder (the seed convention for an empty slot)
+// replaces that placeholder; a DIFFERENT user for a role some OTHER real
+// user already holds gets an ADDITIONAL document -- the existing user's
+// assignment is left completely untouched, enabling multiple
+// SITE_MANAGER/ENGINEERING/HSE holders per project.
+//
+// PROJECT_MANAGER never reaches this function -- projectDetailRepository
+// routes PM assignment through the separate, atomic setProjectManager()
+// below instead, which keeps its own single-PM-per-project invariant
+// untouched by this change.
 export async function assignUser(projectId, role, { userId, name }, assignedBy) {
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS);
   const existing = await getAllDocs(path);
-  const current = existing.find((a) => a.role === role);
-  const data = { role, userId, name, assignedAt: new Date().toISOString(), assignedBy };
-  // MP#4 Corrective Fix: the assignment document ID MUST equal userId --
-  // Firestore authorization checks assignment existence at
-  // projectAssignments/{request.auth.uid}, so a document whose ID is the
-  // PREVIOUS assignee's userId (with the new assignee's userId only in the
-  // field) would leave the new assignee with NO matching document at their
-  // own UID, breaking their access entirely, while the stale doc under the
-  // old UID would incorrectly still exist. Reassigning to a DIFFERENT user
-  // now deletes the old (wrongly-keyed) document and creates a fresh one
-  // at the correct ID, rather than updating the old document in place.
-  if (current && current.id === userId) {
-    await updateDocById(path, current.id, data);
+  const now = new Date().toISOString();
+  const sameUserSameRole = existing.find((a) => a.role === role && a.id === userId);
+  if (sameUserSameRole) {
+    await updateDocById(path, userId, { role, userId, name, assignedAt: now, assignedBy });
   } else {
-    if (current) {
-      await deleteDocById(path, current.id);
+    const placeholder = existing.find((a) => a.role === role && a.name === 'Unassigned');
+    if (placeholder) {
+      await deleteDocById(path, placeholder.id);
     }
-    await createDoc(path, data, userId);
+    await createDoc(path, { role, userId, name, assignedAt: now, assignedBy }, userId);
+  }
+  return getAllDocs(path);
+}
+
+// C-01A: remove one specific (role, userId) assignment -- the counterpart
+// to the additive assignUser above. Never used for PROJECT_MANAGER.
+export async function removeAssignment(projectId, role, userId) {
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.ASSIGNMENTS);
+  const existing = await getAllDocs(path);
+  const target = existing.find((a) => a.role === role && a.id === userId);
+  if (target) {
+    await deleteDocById(path, target.id);
   }
   return getAllDocs(path);
 }

@@ -5,6 +5,7 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import { getProjectById } from '../../services/repositories/projectRepository';
 import { getProjectProgress, getScheduleStatus, recordProgressSnapshot } from '../../services/repositories/progressRepository';
 import ProgressArc from '../../components/common/ProgressArc';
+import { useAuth } from '../../context/AuthContext';
 
 import OverviewTab from './detail/OverviewTab';
 import TeamTab from './detail/TeamTab';
@@ -22,6 +23,7 @@ const TABS = ['Overview', 'Team', 'Work Structure', 'Progress', 'Engineering', '
 export default function ProjectDetailPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const { profile } = useAuth();
   const [project, setProject] = useState(undefined); // undefined = loading, null = not found
   const [loadError, setLoadError] = useState('');
   const [progress, setProgress] = useState(null);
@@ -47,7 +49,14 @@ export default function ProjectDetailPage() {
     setSchedule(null);
     setLoadError('');
 
-    getProjectById(projectId)
+    // C-01A Section 3 (direct URL access defense): pass the CURRENT user's
+    // identity so getProjectById can independently verify assignment,
+    // regardless of how the user navigated here -- including typing an
+    // unauthorized /projects/{projectId} URL directly. Denied access
+    // resolves to `null`, reusing the existing "Project not found" branch
+    // below rather than a distinct error (deliberately not confirming
+    // whether an unauthorized ID even exists).
+    getProjectById(projectId, { userId: profile?.userId ?? profile?.uid ?? profile?.id, role: profile?.role })
       .then(async (data) => {
         if (cancelled) return;
         // FT-9C AC-C10 fix: a not-found result (data is null/undefined,
@@ -76,7 +85,7 @@ export default function ProjectDetailPage() {
         if (!cancelled) setLoadError(err.message || 'Could not load this project. Please try again.');
       });
     return () => { cancelled = true; };
-  }, [projectId]);
+  }, [projectId, profile?.userId, profile?.uid, profile?.id, profile?.role]);
 
   return (
     <Stack spacing={3}>

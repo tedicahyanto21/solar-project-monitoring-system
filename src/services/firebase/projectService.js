@@ -3,8 +3,8 @@
 // SPMS-DOC-06, Section 5. The Firestore document ID is the projectId --
 // never a random Firestore auto-ID (Sprint FT-9A, Section 5).
 import { serverTimestamp } from 'firebase/firestore';
-import { getAllDocs, getOneDoc, createDoc, updateDocById } from './firestoreHelpers';
-import { COLLECTIONS } from './firestorePaths';
+import { getAllDocs, getOneDoc, createDoc, updateDocById, getCollectionGroupDocs, where } from './firestoreHelpers';
+import { COLLECTIONS, PROJECT_SUBCOLLECTIONS } from './firestorePaths';
 
 function toProject(d) {
   if (!d) return null;
@@ -18,6 +18,29 @@ export async function getProjects() {
 
 export async function getProjectById(projectId) {
   return toProject(await getOneDoc(COLLECTIONS.PROJECTS, projectId));
+}
+
+// C-01A: which projects is this user assigned to, across the WHOLE
+// portfolio -- without first knowing which projectIds to check. Uses a
+// Firestore collectionGroup query across every project's
+// projectAssignments subcollection (requires the matching collection-
+// group rule in firestore.rules; see that file for why a per-project
+// nested rule alone does not cover this). `parentId` (the enclosing
+// project's ID) comes from getCollectionGroupDocs, since an assignment
+// document's own data never stores which project it belongs to.
+export async function getProjectIdsAssignedToUser(userId) {
+  const docs = await getCollectionGroupDocs(PROJECT_SUBCOLLECTIONS.ASSIGNMENTS, where('userId', '==', userId));
+  return [...new Set(docs.map((d) => d.parentId).filter(Boolean))];
+}
+
+// C-01A: fetch a specific, known set of projects by ID. Deliberately N
+// parallel getDoc calls rather than a single `where(documentId(), 'in',
+// ids)` query -- Firestore's 'in' operator caps at 30 values, and a PM/SM
+// realistically manages a small number of projects, so this avoids that
+// limit without adding complexity for the common case.
+export async function getProjectsByIds(projectIds) {
+  const docs = await Promise.all(projectIds.map((id) => getOneDoc(COLLECTIONS.PROJECTS, id)));
+  return docs.filter(Boolean).map(toProject);
 }
 
 // Sprint FT-9A, Section 9 (duplicate protection): projectId IS the

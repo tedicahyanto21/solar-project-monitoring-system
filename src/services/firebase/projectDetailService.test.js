@@ -59,16 +59,33 @@ describe('MP#4 Corrective Fix: assignUser maintains the document-ID === userId i
     vi.clearAllMocks();
   });
 
-  it('reassigning a role to a DIFFERENT user deletes the OLD document (wrong ID) and creates a NEW one at the correct ID -- never updates the old doc in place', async () => {
+  it('C-01A supersedes this: a SECOND real user for a multi-holder role (SITE_MANAGER) is now ADDED alongside the first, never deleting the existing holder', async () => {
+    // This test previously asserted the pre-C-01A "replace" behavior
+    // (delete userA's doc, create userB's). C-01A Section on non-PM roles
+    // explicitly REQUIRES the opposite: "If another user already has the
+    // same role: ADD another assignment instead of replacing the existing
+    // user" -- multiple Site Managers must be able to coexist. Updated to
+    // assert the new, correct, approved behavior rather than the old one.
     const { deleteDocById, createDoc, updateDocById } = await import('./firestoreHelpers');
     existingAssignmentsFixture.push({ id: 'userA', role: 'SITE_MANAGER', userId: 'userA', name: 'User A' });
     const { assignUser } = await import('../firebase/projectDetailService');
 
     await assignUser('proj-x', 'SITE_MANAGER', { userId: 'userB', name: 'User B' }, 'admin');
 
-    expect(deleteDocById).toHaveBeenCalledWith(expect.stringContaining('Assignments'), 'userA');
+    expect(deleteDocById).not.toHaveBeenCalled(); // userA's assignment is untouched
     expect(createDoc).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ userId: 'userB' }), 'userB');
     expect(updateDocById).not.toHaveBeenCalled();
+  });
+
+  it('C-01A: a DIFFERENT user replaces only an "Unassigned" PLACEHOLDER row for that role, not a real existing holder', async () => {
+    const { deleteDocById, createDoc } = await import('./firestoreHelpers');
+    existingAssignmentsFixture.push({ id: 'proj-x-eng', role: 'ENGINEERING', userId: 'proj-x-eng', name: 'Unassigned' });
+    const { assignUser } = await import('../firebase/projectDetailService');
+
+    await assignUser('proj-x', 'ENGINEERING', { userId: 'userC', name: 'User C' }, 'admin');
+
+    expect(deleteDocById).toHaveBeenCalledWith(expect.any(String), 'proj-x-eng');
+    expect(createDoc).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ userId: 'userC' }), 'userC');
   });
 
   it('re-confirming the SAME user in the same role updates the existing document in place -- no unnecessary delete+recreate', async () => {

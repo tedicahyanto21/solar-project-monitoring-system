@@ -86,6 +86,22 @@ service cloud.firestore {
       allow write: if isSuperAdmin();
     }
 
+    // ---- collection-group queries -------------------------------------------
+    // C-01A: Firestore does NOT automatically extend a nested match's rule
+    // (below, under /projects/{projectId}/projectAssignments/{userId}) to
+    // collectionGroup() queries -- a separate `match /{path=**}/...` rule
+    // is required, or ALL collection-group reads against this
+    // subcollection name are denied by default. This is what
+    // getProjectIdsAssignedToUser() needs: a user discovering every
+    // project they are assigned to, without first knowing those
+    // projectIds. Scoped to "only your OWN assignment documents, across
+    // any project" -- a user cannot use this to enumerate anyone else's
+    // assignments, and it grants no access beyond what isAssignedToProject
+    // already implies for a project the caller is genuinely assigned to.
+    match /{path=**}/projectAssignments/{userId} {
+      allow read: if isAuthorized() && request.auth.uid == userId;
+    }
+
     // ---- projects and subcollections ---------------------------------------
     match /projects/{projectId} {
       // Portfolio-wide read (Dashboard, BOD) vs. assigned-project read for
