@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Box, Stack, Typography, Paper, TextField, Button, Chip, Alert } from '@mui/material';
+import { Box, Stack, Typography, Paper, TextField, Button, Chip, Alert, Table, TableHead, TableBody, TableRow, TableCell } from '@mui/material';
 import ProjectProgressBar from '../../../components/projects/ProjectProgressBar';
 import CircularStat from '../../../components/dashboard/CircularStat';
 import { getConstructionActivities, updateConstructionActivity } from '../../../services/repositories/projectDetailRepository';
@@ -14,27 +14,45 @@ const DOMAINS = [
   { key: 'hse', label: 'HSE / Permit', basis: 'Item-based + Weight' },
 ];
 
-const CAN_MANAGE_CONSTRUCTION = [ROLES.SITE_MANAGER, ROLES.SUPER_ADMIN];
+const CAN_MANAGE_CONSTRUCTION = [ROLES.PROJECT_MANAGER, ROLES.SITE_MANAGER, ROLES.SUPER_ADMIN];
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function formatDate(iso) {
+  return new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
 
 function ConstructionActivities({ projectId, onDataChanged }) {
   const { profile } = useAuth();
+  // C-01B: both PROJECT_MANAGER and SITE_MANAGER may enter Daily Actual
+  // (the previous implementation allowed SITE_MANAGER only). Neither role
+  // gains PLAN editing capability here -- Activity/Planned Quantity/Unit/
+  // Weight remain exclusively managed in Work Structure (updateConstructionActivityPlan),
+  // which this component never calls.
   const canManage = CAN_MANAGE_CONSTRUCTION.includes(profile?.role);
   const [activities, setActivities] = useState([]);
   const [drafts, setDrafts] = useState({});
+  const [dateDrafts, setDateDrafts] = useState({});
   const [errors, setErrors] = useState({});
+  const [expandedHistory, setExpandedHistory] = useState({});
 
   function load() {
     getConstructionActivities(projectId).then(setActivities);
   }
   useEffect(load, [projectId]);
 
-  // FT-5 A6: negative rejected, planned<=0 guarded, excess flagged (not
-  // silently modified or discarded), history preserved by the repository.
+  // C-01B: the user enters TODAY'S (or a chosen date's) quantity only --
+  // the repository/service layer computes the resulting cumulative total
+  // from history; this component never calculates cumulative itself and
+  // never sends anything other than { dailyQuantity, date }.
   async function handleUpdate(activityId) {
     const value = drafts[activityId];
     if (value === undefined || value === '') return;
+    const date = dateDrafts[activityId] || todayIso();
     try {
-      await updateConstructionActivity(projectId, activityId, { actualQuantity: Number(value) });
+      await updateConstructionActivity(projectId, activityId, { dailyQuantity: Number(value), date });
       setErrors((e) => ({ ...e, [activityId]: null }));
       setDrafts((d) => ({ ...d, [activityId]: '' }));
       load();
@@ -48,32 +66,92 @@ function ConstructionActivities({ projectId, onDataChanged }) {
     <Paper sx={{ p: 3 }}>
       <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>Construction Activities</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Quantity-based (Sprint FT-5 A6). Actual Quantity cannot be negative; excess over
-        Planned Quantity is flagged, never silently modified or discarded.
+        Quantity-based (Sprint FT-5 A6). Enter the DAILY quantity completed for a given date --
+        the system calculates the running Cumulative Actual from daily entries. Actual Quantity
+        cannot be negative; a cumulative total exceeding Planned Quantity is flagged, never
+        silently modified or discarded.
       </Typography>
       <Stack spacing={2}>
         {activities.map((a) => {
           const pct = a.plannedQuantity > 0 ? Math.round((a.actualQuantity / a.plannedQuantity) * 100) : 0;
           const isExcess = a.actualQuantity > a.plannedQuantity;
+          const sortedHistory = [...(a.history || [])].sort((h1, h2) => (h1.date < h2.date ? 1 : -1));
+          const isExpanded = !!expandedHistory[a.id];
           return (
-            <Box key={a.id} sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: '2fr 1.5fr 2fr' }, alignItems: 'center' }}>
-              <Box>
-                <Typography variant="body2" fontWeight={600}>{a.activity}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {a.actualQuantity} / {a.plannedQuantity} {a.unit} ({pct}%) &middot; weight {a.weight}%
-                  {isExcess && <Chip size="small" color="warning" label="Exceeds planned quantity" sx={{ ml: 1 }} />}
-                </Typography>
+            <Box key={a.id} sx={{ borderBottom: '1px solid', borderColor: 'divider', pb: 2 }}>
+              <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: '2fr 1.5fr 2fr 1fr' }, alignItems: 'center' }}>
+                <Box>
+                  <Typography variant="body2" fontWeight={600}>{a.activity}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Cumulative Actual: {a.actualQuantity} / {a.plannedQuantity} {a.unit} ({pct}%) &middot; weight {a.weight}%
+                    {isExcess && <Chip size="small" color="warning" label="Exceeds planned quantity" sx={{ ml: 1 }} />}
+                  </Typography>
+                </Box>
+                <ProjectProgressBar value={Math.min(100, pct)} width="100%" />
+                {canManage && (
+                  <Stack direction="row" spacing={1}>
+                    <TextField
+                      size="small" type="date" label="Date"
+                      value={dateDrafts[a.id] ?? todayIso()}
+                      onChange={(e) => setDateDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
+                      slotProps={{ inputLabel: { shrink: true } }}
+                    />
+                    <TextField
+                      size="small" type="number" label="Daily Actual Quantity"
+                      value={drafts[a.id] ?? ''}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
+                    />
+                    <Button size="small" variant="outlined" onClick={() => handleUpdate(a.id)}>Update</Button>
+                  </Stack>
+                )}
+                <Button size="small" onClick={() => setExpandedHistory((s) => ({ ...s, [a.id]: !s[a.id] }))}>
+                  {isExpanded ? 'Hide history' : 'Show history'}
+                </Button>
               </Box>
-              <ProjectProgressBar value={Math.min(100, pct)} width="100%" />
-              {canManage && (
-                <Stack direction="row" spacing={1}>
-                  <TextField
-                    size="small" type="number" label="New Actual Quantity"
-                    value={drafts[a.id] ?? ''}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
-                  />
-                  <Button size="small" variant="outlined" onClick={() => handleUpdate(a.id)}>Update</Button>
-                </Stack>
+              {isExpanded && (
+                <Table size="small" sx={{ mt: 1.5 }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Date</TableCell>
+                      <TableCell align="right">Daily Actual</TableCell>
+                      <TableCell align="right">Cumulative Actual</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(() => {
+                      // Display-only running total, replayed oldest-first so
+                      // each row's Cumulative Actual matches what the
+                      // system would have shown as of that date. This is a
+                      // PRESENTATION convenience over data already computed
+                      // by the repository/service layer -- the
+                      // authoritative cumulative (a.actualQuantity) is
+                      // never recalculated here, only replayed
+                      // chronologically for the table. A legacy entry (pre-
+                      // C-01B, no dailyQuantity) already represents a
+                      // cumulative-as-of-that-date snapshot, so it becomes
+                      // the running baseline directly; only entries with a
+                      // real dailyQuantity add on top of it.
+                      const chronological = [...sortedHistory].reverse();
+                      let running = 0;
+                      const rows = chronological.map((h) => {
+                        const isLegacy = h.dailyQuantity === undefined;
+                        if (isLegacy) {
+                          running = h.actualQuantity ?? 0;
+                        } else {
+                          running += h.dailyQuantity;
+                        }
+                        return { date: h.date, dailyDisplay: isLegacy ? '\u2014 (legacy entry)' : h.dailyQuantity, cumulativeDisplay: running };
+                      });
+                      return rows.slice().reverse().map((row) => (
+                        <TableRow key={row.date}>
+                          <TableCell>{formatDate(row.date)}</TableCell>
+                          <TableCell align="right">{row.dailyDisplay}</TableCell>
+                          <TableCell align="right">{row.cumulativeDisplay}</TableCell>
+                        </TableRow>
+                      ));
+                    })()}
+                  </TableBody>
+                </Table>
               )}
             </Box>
           );

@@ -142,13 +142,18 @@ export async function updateConstructionActivityPlan(projectId, activityId, patc
   return isLocalMode ? storeUpdateConstructionActivityPlan(projectId, activityId, patch) : fb.updateConstructionActivityPlan(projectId, activityId, patch);
 }
 
-// FT-5 A6: throws on negative Actual Quantity or a zero/negative Planned
-// Quantity -- the caller (UI) is expected to catch and display this, not
-// treat it as a bug. History is appended, never overwritten (both backends).
-export async function updateConstructionActivity(projectId, activityId, { actualQuantity, date }) {
+// C-01B: the caller supplies the day's own dailyQuantity, never the
+// running cumulative total -- actualQuantity is always computed by the
+// data/service layer from history (see mockOperationalData.
+// computeCumulativeFromHistory / the equivalent inline logic in
+// projectDetailService.js). Throws on a negative daily quantity or a
+// zero/negative Planned Quantity -- the caller (UI) is expected to catch
+// and display this, not treat it as a bug. A same-date entry REPLACES
+// that day's value (C-01B's fixed same-date decision); a new date appends.
+export async function updateConstructionActivity(projectId, activityId, { dailyQuantity, date }) {
   return isLocalMode
-    ? storeUpdateConstructionActivity(projectId, activityId, { actualQuantity, date })
-    : fb.updateConstructionActivity(projectId, activityId, { actualQuantity, date });
+    ? storeUpdateConstructionActivity(projectId, activityId, { dailyQuantity, date })
+    : fb.updateConstructionActivity(projectId, activityId, { dailyQuantity, date });
 }
 
 export async function getCommissioningChecklist(projectId) {

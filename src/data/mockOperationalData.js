@@ -150,9 +150,13 @@ function generateOperationsFor(project) {
       actualQuantity,
       unit: 'units',
       weight: Math.round(100 / (4 + Math.floor(rng() * 2))),
-      // FT-5 A6: historical daily progress, preserved (never overwritten)
-      // on every update -- see updateConstructionActivity below.
-      history: [{ date: project.contractStart, actualQuantity: 0 }, { date: new Date().toISOString().slice(0, 10), actualQuantity }],
+      // C-01B: history entries use `dailyQuantity` (independent daily
+      // delta), not a cumulative snapshot. Seeding a zero-quantity day-one
+      // entry plus one entry equal to the full seeded actualQuantity keeps
+      // SUM(dailyQuantity) === actualQuantity for this seed data, while
+      // representing the new daily model going forward (see
+      // computeCumulativeFromHistory).
+      history: [{ date: project.contractStart, dailyQuantity: 0 }, { date: new Date().toISOString().slice(0, 10), dailyQuantity: actualQuantity }],
       updatedAt: new Date().toISOString(),
     };
   });
@@ -454,10 +458,38 @@ export function updateConstructionActivityPlan(projectId, activityId, { activity
   return ops.constructionActivities.find((a) => a.id === activityId) ?? null;
 }
 
-// --- FT-5 A6: Construction activity update, with validation ----------------
+// --- C-01B: daily actual -> system-calculated cumulative ------------------
+// History entries now record an independent DAILY quantity per date
+// (`dailyQuantity`), not a cumulative snapshot. Cumulative actualQuantity
+// is always SUM(history.dailyQuantity) -- never entered directly by a user
+// and never recalculated anywhere outside this function (progressRepository
+// keeps reading the resulting top-level actualQuantity exactly as before;
+// it has no daily-vs-cumulative concept and needs none).
+//
+// Legacy compatibility (C-01B Step 3): a history entry written before this
+// change has `actualQuantity` (a cumulative-at-that-date snapshot) and no
+// `dailyQuantity`. Summing those directly would double-count. Instead, the
+// LAST such legacy entry's value is treated as a one-time starting
+// baseline -- "how far along this activity was before daily tracking
+// began" -- and only entries carrying `dailyQuantity` are summed as
+// independent deltas on top of it. This never touches or rewrites a
+// legacy entry's own data; it only affects how NEW cumulative totals are
+// computed going forward.
+export function computeCumulativeFromHistory(history) {
+  const legacyEntries = history.filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
+  const dailyEntries = history.filter((h) => h.dailyQuantity !== undefined);
+  const legacyBaseline = legacyEntries.length > 0 ? Math.max(...legacyEntries.map((h) => h.actualQuantity)) : 0;
+  const dailySum = dailyEntries.reduce((sum, h) => sum + h.dailyQuantity, 0);
+  return legacyBaseline + dailySum;
+}
+
+// --- FT-5 A6 / C-01B: Construction activity ACTUAL update, with validation --
 // Thrown errors are business-rule violations the UI is expected to catch
-// and display -- they are not bugs.
-export function updateConstructionActivity(projectId, activityId, { actualQuantity, date }) {
+// and display -- they are not bugs. C-01B: the caller now supplies the
+// DAY'S quantity (dailyQuantity), never the running total -- the running
+// total (actualQuantity) is always computed here, from history, never
+// accepted as an input.
+export function updateConstructionActivity(projectId, activityId, { dailyQuantity, date }) {
   const ops = store.get(projectId);
   if (!ops) return null;
   const activity = ops.constructionActivities.find((a) => a.id === activityId);
@@ -465,18 +497,18 @@ export function updateConstructionActivity(projectId, activityId, { actualQuanti
   if (activity.plannedQuantity <= 0) {
     throw new Error('Planned Quantity must be greater than zero before Actual Quantity can be recorded.');
   }
-  if (actualQuantity < 0) {
+  if (dailyQuantity < 0) {
     throw new Error('Actual Quantity cannot be negative.');
   }
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  // Historical daily progress is APPENDED, never overwritten (A6: "Preserve
-  // /update historical daily progress information"). If an entry already
-  // exists for the same date, that entry alone is corrected -- earlier
-  // dates are left untouched.
+  // C-01B, fixed business decision: a SECOND entry for the same date
+  // REPLACES that day's dailyQuantity (a correction) -- it is never added
+  // to the existing value and never creates a second entry for that date.
   const existingSameDay = activity.history.find((h) => h.date === entryDate);
   const history = existingSameDay
-    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, actualQuantity } : h))
-    : [...activity.history, { date: entryDate, actualQuantity }];
+    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, dailyQuantity } : h))
+    : [...activity.history, { date: entryDate, dailyQuantity }];
+  const actualQuantity = computeCumulativeFromHistory(history);
 
   ops.constructionActivities = ops.constructionActivities.map((a) =>
     a.id === activityId ? { ...a, actualQuantity, history, updatedAt: new Date().toISOString() } : a

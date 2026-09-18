@@ -118,6 +118,37 @@ path in isolation -- neither approach ever touches a real Firebase project.
 `npm test` is safe to run repeatedly on any machine, with or without a
 configured `.env`, and never modifies real Firestore data.
 
+## Daily Actual & PM Actual access
+
+**C-01B (UAT correction):** the business agreement was that both
+PROJECT_MANAGER and SITE_MANAGER may enter field ACTUAL progress for
+Construction Activities (previously only SITE_MANAGER could), and that
+users enter a DAILY quantity per date rather than a running total.
+
+**PLAN vs ACTUAL, unchanged:** PROJECT_MANAGER still exclusively owns
+`activity`/`plannedQuantity`/`unit`/`weight` via `updateConstructionActivityPlan`
+in Work Structure. Both PROJECT_MANAGER and SITE_MANAGER may now call
+`updateConstructionActivity` (Progress tab) with `{dailyQuantity, date}` --
+neither role gains access to the other's exclusive fields; `firestore.rules`
+enforces PM's ACTUAL clause and SM's ACTUAL clause as two separate,
+identically-scoped clauses (`hasOnly(['actualQuantity', 'history', 'updatedAt'])`),
+both still gated by `isAssignedToProject(projectId)`.
+
+**Daily-to-cumulative:** each `history` entry now records `{date,
+dailyQuantity}` -- an independent daily delta, not a snapshot of the
+running total. The top-level `actualQuantity` (what
+`progressRepository.calculateConstructionProgress` reads -- unchanged,
+since it has never read `history`) is always computed as SUM of every
+`dailyQuantity` entry. A second entry for the same date REPLACES that
+day's value rather than appending a duplicate or adding to it.
+
+**Legacy compatibility:** a history entry written before this change (with
+the old field name `actualQuantity`, representing a cumulative snapshot as
+of that date) is never summed directly, which would double-count. The most
+recent such entry is treated as a one-time starting baseline; only entries
+carrying the new `dailyQuantity` field are summed as independent deltas on
+top of it. No destructive migration was performed or is required for this.
+
 ## Project-level access control
 
 **C-01A (UAT correction):** a real Firebase UAT found that PROJECT_MANAGER

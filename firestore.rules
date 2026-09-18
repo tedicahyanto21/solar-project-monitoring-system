@@ -201,9 +201,20 @@ service cloud.firestore {
         // plannedQuantity/weight already was. Neither role can cross into
         // the other's owned fields via a direct Firestore write, not just
         // through the UI.
+        // C-01B: PROJECT_MANAGER may ALSO enter Daily Actual (business
+        // decision: PM and SM both enter ACTUAL) -- added as its OWN
+        // clause, parallel to SITE_MANAGER's, rather than folding
+        // actualQuantity/history into the existing PM PLAN clause above.
+        // Keeping PM PLAN and PM ACTUAL as two separate clauses (matching
+        // the two separate application-layer calls, updateConstructionActivityPlan
+        // vs updateConstructionActivity) means a single write still must
+        // stay entirely within ONE ownership boundary or the other -- it
+        // never becomes an unrestricted "PM can touch anything" rule.
         allow update: if isSuperAdmin()
           || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activity', 'plannedQuantity', 'unit', 'weight', 'updatedAt']))
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['actualQuantity', 'history', 'updatedAt']))
           || (hasRole(['SITE_MANAGER']) && isAssignedToProject(projectId)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['actualQuantity', 'history', 'updatedAt']));
       }

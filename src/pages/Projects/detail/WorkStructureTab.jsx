@@ -280,9 +280,9 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
           <Box>
             <Typography variant="subtitle1" fontWeight={700}>Construction Activities (Plan)</Typography>
             <Typography variant="body2" color="text.secondary">
-              Master Prompt #3: Activity, Planned Quantity, Unit, and Weight are
-              PROJECT_MANAGER-owned PLAN fields. Actual Quantity is entered by the Site
-              Manager in the Progress tab, not here.
+              Activity, Planned Quantity, Unit, and Weight are PROJECT_MANAGER-owned PLAN
+              fields, managed here. Daily Actual Quantity is entered by the Project Manager
+              or Site Manager in the Progress tab, not here.
             </Typography>
           </Box>
           {canManageConstructionPlan && (

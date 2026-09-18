@@ -27,13 +27,17 @@ import { getOperations, updateConstructionActivity, createConstructionActivity, 
 
 const seedProjectId = initialProjects[0].id;
 
-describe('updateConstructionActivity (Plan vs Actual ownership, Section 9)', () => {
-  it('the ACTUAL-side update function only ever accepts actualQuantity and date -- it has no parameter through which a caller could pass plannedQuantity, weight, unit, or the activity name', () => {
-    // This is a structural guarantee, not a runtime check: the function
-    // destructures exactly { actualQuantity, date } from its third
-    // argument, so any PLAN fields included in a caller's object are
-    // silently ignored rather than applied -- there is no code path here
-    // that could ever write to a PLAN field.
+describe('updateConstructionActivity (Plan vs Actual ownership, Section 9; daily model, C-01B)', () => {
+  it('the ACTUAL-side update function only ever accepts dailyQuantity and date -- it has no parameter through which a caller could pass plannedQuantity, weight, unit, or the activity name', () => {
+    // C-01B: this test previously asserted the OLD signature
+    // { actualQuantity, date } and treated the supplied value as the new
+    // running total. The business model intentionally changed: the caller
+    // now supplies the DAY'S OWN quantity (dailyQuantity); the running
+    // total is computed by the function itself from history, never
+    // accepted as input. This is a structural guarantee, not a runtime
+    // check: the function destructures exactly { dailyQuantity, date }
+    // from its third argument, so any PLAN fields included in a caller's
+    // object are silently ignored rather than applied.
     const ops = getOperations(seedProjectId);
     const activity = ops.constructionActivities[0];
     const originalPlanned = activity.plannedQuantity;
@@ -41,7 +45,7 @@ describe('updateConstructionActivity (Plan vs Actual ownership, Section 9)', () 
     const originalActivityName = activity.activity;
 
     updateConstructionActivity(seedProjectId, activity.id, {
-      actualQuantity: 5,
+      dailyQuantity: 5,
       date: '2026-01-15',
       // Even if a caller attempted to sneak PLAN fields in alongside the
       // expected ones, the destructuring below drops them on the floor.
@@ -54,23 +58,25 @@ describe('updateConstructionActivity (Plan vs Actual ownership, Section 9)', () 
     expect(updated.plannedQuantity).toBe(originalPlanned);
     expect(updated.weight).toBe(originalWeight);
     expect(updated.activity).toBe(originalActivityName);
-    expect(updated.actualQuantity).toBe(5);
+    // Cumulative = legacy baseline (this seed activity's prior actualQuantity,
+    // carried via its existing legacy history entries) + the new day's 5.
+    expect(updated.actualQuantity).toBe(activity.actualQuantity + 5);
   });
 
-  it('rejects a negative Actual Quantity (Sprint FT-5 A6, unchanged by this task)', () => {
+  it('rejects a negative Daily Actual Quantity (Sprint FT-5 A6, unchanged by this task)', () => {
     const ops = getOperations(seedProjectId);
     const activity = ops.constructionActivities[1];
-    expect(() => updateConstructionActivity(seedProjectId, activity.id, { actualQuantity: -10 })).toThrow(/cannot be negative/);
+    expect(() => updateConstructionActivity(seedProjectId, activity.id, { dailyQuantity: -10 })).toThrow(/cannot be negative/);
   });
 
   it('preserves history as an append-only log -- an update for a NEW date adds an entry rather than replacing prior history', () => {
     const ops = getOperations(seedProjectId);
     const activity = ops.constructionActivities[2];
     const historyLengthBefore = activity.history.length;
-    updateConstructionActivity(seedProjectId, activity.id, { actualQuantity: 42, date: '2099-01-01' });
+    updateConstructionActivity(seedProjectId, activity.id, { dailyQuantity: 42, date: '2099-01-01' });
     const updated = getOperations(seedProjectId).constructionActivities.find((a) => a.id === activity.id);
     expect(updated.history.length).toBe(historyLengthBefore + 1);
-    expect(updated.history.find((h) => h.date === '2099-01-01').actualQuantity).toBe(42);
+    expect(updated.history.find((h) => h.date === '2099-01-01').dailyQuantity).toBe(42);
   });
 });
 
@@ -138,7 +144,10 @@ describe('updateConstructionActivityPlan (Master Prompt #3, Section 4: PM PLAN e
 
   it('a PM PLAN edit does NOT modify actualQuantity or history, even if the site already recorded actual progress', () => {
     const created = createConstructionActivity(mp3ProjectId, { activity: 'Has Actuals', plannedQuantity: 100, unit: 'units', weight: 10 });
-    updateConstructionActivity(mp3ProjectId, created.id, { actualQuantity: 40, date: '2026-01-10' });
+    // C-01B: caller now supplies dailyQuantity (the day's own amount), not
+    // the running total -- starting from an empty history, cumulative ==
+    // this single day's value, so the expected total (40) is unchanged.
+    updateConstructionActivity(mp3ProjectId, created.id, { dailyQuantity: 40, date: '2026-01-10' });
     const beforeEdit = getOperations(mp3ProjectId).constructionActivities.find((a) => a.id === created.id);
     expect(beforeEdit.actualQuantity).toBe(40);
     expect(beforeEdit.history.length).toBe(1);
@@ -159,7 +168,7 @@ describe('updateConstructionActivityPlan (Master Prompt #3, Section 4: PM PLAN e
 describe('Master Prompt #3, Section 18: PLAN vs ACTUAL operations cannot cross into each other\'s fields', () => {
   it('the ACTUAL operation (updateConstructionActivity) cannot modify PLAN fields, even if a caller tries to sneak them in', () => {
     const created = createConstructionActivity(mp3ProjectId, { activity: 'Cross-Check A', plannedQuantity: 100, unit: 'units', weight: 25 });
-    updateConstructionActivity(mp3ProjectId, created.id, { actualQuantity: 30, date: '2026-02-01', plannedQuantity: 999, weight: 999, activity: 'Hacked' });
+    updateConstructionActivity(mp3ProjectId, created.id, { dailyQuantity: 30, date: '2026-02-01', plannedQuantity: 999, weight: 999, activity: 'Hacked' });
     const result = getOperations(mp3ProjectId).constructionActivities.find((a) => a.id === created.id);
     expect(result.plannedQuantity).toBe(100);
     expect(result.weight).toBe(25);
@@ -169,8 +178,8 @@ describe('Master Prompt #3, Section 18: PLAN vs ACTUAL operations cannot cross i
 
   it('the PLAN operation (updateConstructionActivityPlan) cannot modify ACTUAL fields, even if a caller tries to sneak them in', () => {
     const created = createConstructionActivity(mp3ProjectId, { activity: 'Cross-Check B', plannedQuantity: 100, unit: 'units', weight: 25 });
-    updateConstructionActivity(mp3ProjectId, created.id, { actualQuantity: 55, date: '2026-02-02' });
-    updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: 200, actualQuantity: 999999, history: [{ date: 'fake', actualQuantity: 999 }] });
+    updateConstructionActivity(mp3ProjectId, created.id, { dailyQuantity: 55, date: '2026-02-02' });
+    updateConstructionActivityPlan(mp3ProjectId, created.id, { plannedQuantity: 200, actualQuantity: 999999, history: [{ date: 'fake', dailyQuantity: 999 }] });
     const result = getOperations(mp3ProjectId).constructionActivities.find((a) => a.id === created.id);
     expect(result.actualQuantity).toBe(55); // untouched -- 999999 never applied
     expect(result.history.length).toBe(1); // untouched -- fake entry never applied

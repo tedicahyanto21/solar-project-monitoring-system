@@ -197,10 +197,19 @@ export async function updateConstructionActivityPlan(projectId, activityId, { ac
   return updateDocById(path, activityId, patch);
 }
 
-// FT-5 A6: same validation as the mock store -- negative rejected, planned
-// quantity of zero guarded, history appended (never overwritten).
-export async function updateConstructionActivity(projectId, activityId, { actualQuantity, date }) {
-  if (actualQuantity < 0) throw new Error('Actual Quantity cannot be negative.');
+// C-01B: same daily-to-cumulative model as the mock store -- the caller
+// supplies dailyQuantity (the day's own quantity), never the running
+// total. actualQuantity is always computed here as SUM(history.
+// dailyQuantity), with the same legacy-entry safety net as the mock
+// store's computeCumulativeFromHistory: a pre-C-01B history entry (which
+// has `actualQuantity`, a cumulative snapshot, and no `dailyQuantity`) is
+// never summed directly -- the LAST such entry is treated as a one-time
+// starting baseline, and only `dailyQuantity` entries are summed on top of
+// it. Negative rejected, zero planned-quantity guarded, same-date entries
+// REPLACE (never duplicate or add to) that day's value -- all unchanged
+// business rules from FT-5 A6 / C-01B's fixed same-date decision.
+export async function updateConstructionActivity(projectId, activityId, { dailyQuantity, date }) {
+  if (dailyQuantity < 0) throw new Error('Actual Quantity cannot be negative.');
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES);
   const activity = await getOneDoc(path, activityId);
   if (!activity) return null;
@@ -208,8 +217,12 @@ export async function updateConstructionActivity(projectId, activityId, { actual
   const entryDate = date || new Date().toISOString().slice(0, 10);
   const existingSameDay = (activity.history || []).find((h) => h.date === entryDate);
   const history = existingSameDay
-    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, actualQuantity } : h))
-    : [...(activity.history || []), { date: entryDate, actualQuantity }];
+    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, dailyQuantity } : h))
+    : [...(activity.history || []), { date: entryDate, dailyQuantity }];
+  const legacyEntries = history.filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
+  const dailyEntries = history.filter((h) => h.dailyQuantity !== undefined);
+  const legacyBaseline = legacyEntries.length > 0 ? Math.max(...legacyEntries.map((h) => h.actualQuantity)) : 0;
+  const actualQuantity = legacyBaseline + dailyEntries.reduce((sum, h) => sum + h.dailyQuantity, 0);
   return updateDocById(path, activityId, { actualQuantity, history, updatedAt: new Date().toISOString() });
 }
 
