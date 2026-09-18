@@ -174,3 +174,93 @@ describe('C-01B, Section D: data safety (Tests 18-21)', () => {
     expect(result.actualQuantity).toBe(250); // 200 (legacy baseline) + 50, NOT 200 + 200 + 50
   });
 });
+
+// C-01B Corrective: Legacy Actual Consistency & UI Cleanup. Two confirmed
+// defects from technical-lead review of the initial C-01B implementation:
+// (1) the legacy baseline used Math.max() instead of the LATEST snapshot
+// by date; (2) a new daily entry sharing a date with an existing LEGACY
+// entry silently overwrote/destroyed that legacy entry instead of
+// preserving it as a baseline. Both are fixed in
+// mockOperationalData.computeCumulativeFromHistory /
+// updateConstructionActivity (and the equivalent Firebase functions).
+describe('C-01B Corrective, Test 1: legacy baseline is the LATEST snapshot by date, never Math.max()', () => {
+  it('a legacy history with a numerically HIGHER but chronologically OLDER snapshot must not be used as the baseline', () => {
+    // 2026-08-15's snapshot (180) is numerically larger than 2026-08-30's
+    // (150), but 2026-08-30 is the LATEST date -- the correct baseline is
+    // 150, proving the implementation does not use Math.max().
+    const legacyHistory = [
+      { date: '2026-08-01', actualQuantity: 100 },
+      { date: '2026-08-15', actualQuantity: 180 },
+      { date: '2026-08-30', actualQuantity: 150 },
+    ];
+    expect(computeCumulativeFromHistory(legacyHistory)).toBe(150); // NOT 180 (Math.max would give 180)
+  });
+
+  it('legacy entries out of chronological ORDER in the array still resolve to the latest-by-DATE snapshot, not the last array element or the largest value', () => {
+    const legacyHistoryOutOfOrder = [
+      { date: '2026-08-30', actualQuantity: 150 },
+      { date: '2026-08-01', actualQuantity: 100 },
+      { date: '2026-08-15', actualQuantity: 180 },
+    ];
+    expect(computeCumulativeFromHistory(legacyHistoryOutOfOrder)).toBe(150);
+  });
+});
+
+describe('C-01B Corrective, Test 2: a new daily entry on the SAME DATE as an existing legacy snapshot preserves the legacy baseline', () => {
+  it('legacy 2026-09-18=200, then a new dailyQuantity=50 for the SAME date -- cumulative must be 250, never 50', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Legacy Same-Date Collision', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    const ops = getOperations(c01bProjectId);
+    ops.constructionActivities = ops.constructionActivities.map((a) =>
+      a.id === created.id ? { ...a, actualQuantity: 200, history: [{ date: '2026-09-18', actualQuantity: 200 }] } : a
+    );
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-18' });
+    expect(result.actualQuantity).toBe(250); // 200 (legacy, preserved) + 50 (new)
+    // The legacy entry itself must survive, untouched, alongside the new one.
+    const legacyEntry = result.history.find((h) => h.actualQuantity === 200 && h.dailyQuantity === undefined);
+    expect(legacyEntry).toBeTruthy();
+    expect(legacyEntry.date).toBe('2026-09-18');
+    const newEntry = result.history.find((h) => h.dailyQuantity === 50);
+    expect(newEntry).toBeTruthy();
+    expect(newEntry.date).toBe('2026-09-18');
+  });
+
+  it('a SUBSEQUENT correction to that same date\'s NEW entry replaces only the new-style entry -- the legacy entry remains untouched', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Legacy Then Correction', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    const ops = getOperations(c01bProjectId);
+    ops.constructionActivities = ops.constructionActivities.map((a) =>
+      a.id === created.id ? { ...a, actualQuantity: 200, history: [{ date: '2026-09-18', actualQuantity: 200 }] } : a
+    );
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-18' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 70, date: '2026-09-18' });
+    expect(corrected.history).toHaveLength(2); // still legacy + one new entry, not three
+    expect(corrected.actualQuantity).toBe(270); // 200 (legacy) + 70 (corrected, replacing the 50)
+  });
+});
+
+describe('C-01B Corrective, Test 3: normal same-date daily correction (no legacy involved) is unaffected by this fix', () => {
+  it('100 then 150 on different dates, then correcting the first date to 120, gives cumulative 270 -- not 370', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Normal Correction Regression', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 150, date: '2026-09-19' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 120, date: '2026-09-18' });
+    expect(corrected.history).toHaveLength(2);
+    expect(corrected.actualQuantity).toBe(270);
+  });
+});
+
+describe('C-01B Corrective, Test 4: multi-date daily sum regression', () => {
+  it('100 + 150 + 125 = 375, exactly the C-01B worked example', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Multi-Date Sum Regression', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 150, date: '2026-09-19' });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 125, date: '2026-09-20' });
+    expect(result.actualQuantity).toBe(375);
+  });
+});
+
+describe('C-01B Corrective, Test 5: Progress Engine regression -- formula itself is untouched', () => {
+  it('plannedQuantity=500, actualQuantity=250 -> construction progress is exactly 50%', async () => {
+    const { calculateConstructionProgress } = await import('../services/repositories/progressRepository');
+    expect(calculateConstructionProgress([{ plannedQuantity: 500, actualQuantity: 250, weight: 100 }])).toBe(50);
+  });
+});

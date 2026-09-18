@@ -208,6 +208,14 @@ export async function updateConstructionActivityPlan(projectId, activityId, { ac
 // it. Negative rejected, zero planned-quantity guarded, same-date entries
 // REPLACE (never duplicate or add to) that day's value -- all unchanged
 // business rules from FT-5 A6 / C-01B's fixed same-date decision.
+// C-01B Corrective: same fixes as the mock store's updateConstructionActivity /
+// computeCumulativeFromHistory --
+// Fix #1: legacy baseline is the LATEST legacy snapshot BY DATE, not the
+// numerically largest one.
+// Fix #2: a same-date lookup only ever matches an existing NEW-style
+// (dailyQuantity) entry -- never a legacy {date, actualQuantity} snapshot
+// that happens to share the date, which would otherwise be silently
+// overwritten and destroy its baseline value.
 export async function updateConstructionActivity(projectId, activityId, { dailyQuantity, date }) {
   if (dailyQuantity < 0) throw new Error('Actual Quantity cannot be negative.');
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES);
@@ -215,13 +223,14 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
   if (!activity) return null;
   if (activity.plannedQuantity <= 0) throw new Error('Planned Quantity must be greater than zero before Actual Quantity can be recorded.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  const existingSameDay = (activity.history || []).find((h) => h.date === entryDate);
-  const history = existingSameDay
-    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, dailyQuantity } : h))
+  const existingDailyEntry = (activity.history || []).find((h) => h.date === entryDate && h.dailyQuantity !== undefined);
+  const history = existingDailyEntry
+    ? activity.history.map((h) => (h === existingDailyEntry ? { date: entryDate, dailyQuantity } : h))
     : [...(activity.history || []), { date: entryDate, dailyQuantity }];
   const legacyEntries = history.filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
   const dailyEntries = history.filter((h) => h.dailyQuantity !== undefined);
-  const legacyBaseline = legacyEntries.length > 0 ? Math.max(...legacyEntries.map((h) => h.actualQuantity)) : 0;
+  const latestLegacyEntry = legacyEntries.reduce((latest, h) => (!latest || h.date > latest.date ? h : latest), null);
+  const legacyBaseline = latestLegacyEntry ? latestLegacyEntry.actualQuantity : 0;
   const actualQuantity = legacyBaseline + dailyEntries.reduce((sum, h) => sum + h.dailyQuantity, 0);
   return updateDocById(path, activityId, { actualQuantity, history, updatedAt: new Date().toISOString() });
 }

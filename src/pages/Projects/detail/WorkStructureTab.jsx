@@ -19,9 +19,9 @@ import { ROLES } from '../../../constants/roles';
 const CAN_MANAGE_WEIGHTS = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.PROJECT_MANAGER];
 const CAN_MANAGE_PROCUREMENT = [ROLES.SCM, ROLES.SUPER_ADMIN];
 // Master Prompt #3, Section 4: Construction PLAN (activity/plannedQuantity/
-// unit/weight) is PROJECT_MANAGER territory -- Site Manager's ACTUAL entry
-// happens in ProgressTab instead (Section 12: no PLAN editor duplicated
-// there, no ACTUAL editor duplicated here).
+// unit/weight) is PROJECT_MANAGER territory -- ACTUAL entry (by PROJECT_MANAGER
+// or SITE_MANAGER, C-01B) happens in ProgressTab instead (Section 12: no
+// PLAN editor duplicated there, no ACTUAL editor duplicated here).
 const CAN_MANAGE_CONSTRUCTION_PLAN = [ROLES.SUPER_ADMIN, ROLES.PROJECT_MANAGER];
 const CONSTRUCTION_PLAN_EMPTY = { activity: '', plannedQuantity: '', unit: 'units', weight: '' };
 
@@ -131,7 +131,8 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
   // Master Prompt #3, Section 4: PM PLAN capability for Construction
   // Activities. openAddActivity/openEditActivity/handleSavePlan are all
   // PLAN-only -- they never read or write actualQuantity/history, which
-  // stays exclusively in ProgressTab's Site Manager entry point.
+  // stays exclusively in ProgressTab's ACTUAL entry point (PROJECT_MANAGER
+  // or SITE_MANAGER, C-01B).
   function openAddActivity() {
     if (!canManageConstructionPlan) return; // defense in depth, not just a hidden button
     setEditingActivityId(null);
@@ -300,7 +301,7 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
               <Typography variant="body2" fontWeight={600}>{a.activity}</Typography>
               <Typography variant="caption" color="text.secondary">Planned: {a.plannedQuantity} {a.unit}</Typography>
               <Typography variant="caption" color="text.secondary">Weight: {a.weight}%</Typography>
-              <Typography variant="caption" color="text.secondary">Actual: {a.actualQuantity} {a.unit} (Site Manager)</Typography>
+              <Typography variant="caption" color="text.secondary">Cumulative Actual: {a.actualQuantity} {a.unit}</Typography>
               <ProjectProgressBar value={a.plannedQuantity > 0 ? Math.round((a.actualQuantity / a.plannedQuantity) * 100) : 0} width="100%" />
               {canManageConstructionPlan && (
                 <Button size="small" onClick={() => openEditActivity(a)}>Edit Plan</Button>

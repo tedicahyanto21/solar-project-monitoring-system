@@ -475,10 +475,22 @@ export function updateConstructionActivityPlan(projectId, activityId, { activity
 // independent deltas on top of it. This never touches or rewrites a
 // legacy entry's own data; it only affects how NEW cumulative totals are
 // computed going forward.
+// C-01B Corrective, Fix #1: the legacy baseline must be the LATEST legacy
+// snapshot BY DATE, not the numerically largest one -- a cumulative
+// snapshot could in principle have been corrected downward in the old
+// system, so "latest date" is the only reading that stays faithful to
+// the chronological history rather than assuming values only ever grew.
+// Uses the same string date comparison already used elsewhere in this
+// codebase (ISO YYYY-MM-DD sorts correctly lexicographically) rather than
+// introducing a new date utility.
 export function computeCumulativeFromHistory(history) {
   const legacyEntries = history.filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
   const dailyEntries = history.filter((h) => h.dailyQuantity !== undefined);
-  const legacyBaseline = legacyEntries.length > 0 ? Math.max(...legacyEntries.map((h) => h.actualQuantity)) : 0;
+  const latestLegacyEntry = legacyEntries.reduce(
+    (latest, h) => (!latest || h.date > latest.date ? h : latest),
+    null
+  );
+  const legacyBaseline = latestLegacyEntry ? latestLegacyEntry.actualQuantity : 0;
   const dailySum = dailyEntries.reduce((sum, h) => sum + h.dailyQuantity, 0);
   return legacyBaseline + dailySum;
 }
@@ -504,9 +516,21 @@ export function updateConstructionActivity(projectId, activityId, { dailyQuantit
   // C-01B, fixed business decision: a SECOND entry for the same date
   // REPLACES that day's dailyQuantity (a correction) -- it is never added
   // to the existing value and never creates a second entry for that date.
-  const existingSameDay = activity.history.find((h) => h.date === entryDate);
-  const history = existingSameDay
-    ? activity.history.map((h) => (h.date === entryDate ? { date: entryDate, dailyQuantity } : h))
+  //
+  // C-01B Corrective, Fix #2: this lookup matches only an EXISTING
+  // NEW-STYLE (dailyQuantity) entry for the date -- never a legacy
+  // {date, actualQuantity} snapshot that happens to share it. A legacy
+  // entry is a cumulative snapshot, not a daily delta; overwriting it with
+  // {date, dailyQuantity} would silently destroy the legacy baseline
+  // computeCumulativeFromHistory depends on (e.g. a legacy 200 replaced by
+  // a "50" would wrongly make cumulative 50 instead of 250). When no
+  // NEW-style entry exists yet for this date -- whether because there is
+  // no entry at all, or because the only entry sharing the date is a
+  // legacy one -- a new entry is appended, leaving any legacy entry on
+  // that same date completely untouched.
+  const existingDailyEntry = activity.history.find((h) => h.date === entryDate && h.dailyQuantity !== undefined);
+  const history = existingDailyEntry
+    ? activity.history.map((h) => (h === existingDailyEntry ? { date: entryDate, dailyQuantity } : h))
     : [...activity.history, { date: entryDate, dailyQuantity }];
   const actualQuantity = computeCumulativeFromHistory(history);
 
