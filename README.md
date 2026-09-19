@@ -145,9 +145,13 @@ day's value rather than appending a duplicate or adding to it.
 **Legacy compatibility:** a history entry written before this change (with
 the old field name `actualQuantity`, representing a cumulative snapshot as
 of that date) is never summed directly, which would double-count. The most
-recent such entry is treated as a one-time starting baseline; only entries
-carrying the new `dailyQuantity` field are summed as independent deltas on
-top of it. No destructive migration was performed or is required for this.
+recent (by date, not by value) such entry is treated as a one-time starting
+baseline; only entries carrying the new `dailyQuantity` field are summed as
+independent deltas on top of it. No destructive migration was performed or
+is required for this. A Daily Actual date must be on or after the latest
+legacy snapshot's date -- an earlier date is rejected outright (never
+silently adjusted), since it would record a delta for a period the legacy
+snapshot already accounted for.
 
 ## Project-level access control
 
@@ -235,7 +239,7 @@ collection. Progress history snapshots continue to live in
 | Concern | Owner |
 |---|---|
 | PLAN data (milestones, target quantities, weights) | PROJECT_MANAGER |
-| ACTUAL data (actual quantities, site results) | SITE_MANAGER |
+| ACTUAL data (actual quantities, site results) | PROJECT_MANAGER, SITE_MANAGER (C-01B) |
 | Engineering / HSE domain contribution | ENGINEERING / HSE |
 | All progress **calculation** | `progressRepository` (nobody else) |
 | Persistence | Firebase service layer only |

@@ -223,6 +223,16 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
   if (!activity) return null;
   if (activity.plannedQuantity <= 0) throw new Error('Planned Quantity must be greater than zero before Actual Quantity can be recorded.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
+  // C-01B Small Corrective: Daily Actual date must be >= the latest legacy
+  // snapshot's date -- see the mock store's identical validation for the
+  // rationale (backdating before that point would double-count progress
+  // the legacy cumulative snapshot already accounted for). The submitted
+  // date is never modified, only rejected when invalid.
+  const preExistingLegacyEntries = (activity.history || []).filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
+  const latestPreExistingLegacyEntry = preExistingLegacyEntries.reduce((latest, h) => (!latest || h.date > latest.date ? h : latest), null);
+  if (latestPreExistingLegacyEntry && entryDate < latestPreExistingLegacyEntry.date) {
+    throw new Error('Daily Actual date cannot be earlier than the latest legacy actual date.');
+  }
   const existingDailyEntry = (activity.history || []).find((h) => h.date === entryDate && h.dailyQuantity !== undefined);
   const history = existingDailyEntry
     ? activity.history.map((h) => (h === existingDailyEntry ? { date: entryDate, dailyQuantity } : h))

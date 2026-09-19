@@ -24,6 +24,20 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+// C-01B Small Corrective: mirrors the repository/service layer's own
+// latest-legacy-snapshot lookup, purely so the date input's `min` can
+// steer the user away from an invalid date up front. This is a UX
+// convenience only -- the actual rule is enforced independently in
+// mockOperationalData.js / projectDetailService.js, which is what a
+// bypassed or stale UI state would still be rejected by.
+function getLatestLegacySnapshotDate(history) {
+  const latest = (history || []).reduce(
+    (acc, h) => (h.dailyQuantity === undefined && h.actualQuantity !== undefined && (!acc || h.date > acc) ? h.date : acc),
+    null
+  );
+  return latest;
+}
+
 function ConstructionActivities({ projectId, onDataChanged }) {
   const { profile } = useAuth();
   // C-01B: both PROJECT_MANAGER and SITE_MANAGER may enter Daily Actual
@@ -94,7 +108,7 @@ function ConstructionActivities({ projectId, onDataChanged }) {
                       size="small" type="date" label="Date"
                       value={dateDrafts[a.id] ?? todayIso()}
                       onChange={(e) => setDateDrafts((d) => ({ ...d, [a.id]: e.target.value }))}
-                      slotProps={{ inputLabel: { shrink: true } }}
+                      slotProps={{ inputLabel: { shrink: true }, htmlInput: { min: getLatestLegacySnapshotDate(a.history) || undefined } }}
                     />
                     <TextField
                       size="small" type="number" label="Daily Actual Quantity"

@@ -513,6 +513,19 @@ export function updateConstructionActivity(projectId, activityId, { dailyQuantit
     throw new Error('Actual Quantity cannot be negative.');
   }
   const entryDate = date || new Date().toISOString().slice(0, 10);
+  // C-01B Small Corrective: a Daily Actual date must be >= the latest
+  // legacy snapshot's date. Backdating before that point would record a
+  // daily delta for a period the legacy system had already accounted for
+  // in its own cumulative snapshot, silently double-counting progress that
+  // predates daily tracking. The submitted date itself is never modified
+  // -- an invalid date is rejected outright, not clamped or moved.
+  const latestLegacyEntry = activity.history.reduce(
+    (latest, h) => (h.dailyQuantity === undefined && h.actualQuantity !== undefined && (!latest || h.date > latest.date) ? h : latest),
+    null
+  );
+  if (latestLegacyEntry && entryDate < latestLegacyEntry.date) {
+    throw new Error('Daily Actual date cannot be earlier than the latest legacy actual date.');
+  }
   // C-01B, fixed business decision: a SECOND entry for the same date
   // REPLACES that day's dailyQuantity (a correction) -- it is never added
   // to the existing value and never creates a second entry for that date.

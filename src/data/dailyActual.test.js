@@ -264,3 +264,79 @@ describe('C-01B Corrective, Test 5: Progress Engine regression -- formula itself
     expect(calculateConstructionProgress([{ plannedQuantity: 500, actualQuantity: 250, weight: 100 }])).toBe(50);
   });
 });
+
+// C-01B Small Corrective: Backdated Daily Actual Protection. Business
+// rule: a Daily Actual date must be >= the latest legacy snapshot's date
+// -- entering a date BEFORE that point would record a delta for a period
+// the legacy cumulative snapshot already accounted for, double-counting
+// progress. Same-date and after-date entries remain fully allowed.
+function setupWithLegacySnapshot(activityId, date, actualQuantity) {
+  const ops = getOperations(c01bProjectId);
+  ops.constructionActivities = ops.constructionActivities.map((a) =>
+    a.id === activityId ? { ...a, actualQuantity, history: [{ date, actualQuantity }] } : a
+  );
+}
+
+describe('C-01B Small Corrective, Test A: no legacy snapshot -- Daily Actual entered normally, unaffected by this rule', () => {
+  it('an activity with no legacy history accepts any date, including one that would otherwise look "early"', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'No Legacy Baseline', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2020-01-01' });
+    expect(result.actualQuantity).toBe(30);
+  });
+});
+
+describe('C-01B Small Corrective, Test B: SAME date as the latest legacy snapshot is allowed', () => {
+  it('legacy 2026-09-18=200, Daily Actual also dated 2026-09-18=50 -> allowed, baseline preserved, cumulative = 250', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Same As Legacy Date', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created.id, '2026-09-18', 200);
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-18' });
+    expect(result.actualQuantity).toBe(250);
+    expect(result.history.some((h) => h.actualQuantity === 200)).toBe(true); // legacy entry survives
+  });
+});
+
+describe('C-01B Small Corrective, Test C: a date AFTER the latest legacy snapshot is allowed', () => {
+  it('legacy 2026-09-18=200, then 2026-09-19=100 -> allowed, cumulative = 300; a further 2026-09-20=100 -> cumulative = 400 (the prompt\'s worked example variant)', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'After Legacy Date', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created.id, '2026-09-18', 200);
+    let result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-19' });
+    expect(result.actualQuantity).toBe(300);
+
+    // Exact worked example from this corrective's spec: 200 + 50 + 100 = 350.
+    const created2 = createConstructionActivity(c01bProjectId, { activity: 'Worked Example', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created2.id, '2026-09-18', 200);
+    updateConstructionActivity(c01bProjectId, created2.id, { dailyQuantity: 50, date: '2026-09-18' });
+    result = updateConstructionActivity(c01bProjectId, created2.id, { dailyQuantity: 100, date: '2026-09-19' });
+    expect(result.actualQuantity).toBe(350);
+  });
+});
+
+describe('C-01B Small Corrective, Test D: a date BEFORE the latest legacy snapshot is REJECTED', () => {
+  it('legacy 2026-09-18=200, Daily Actual dated 2026-09-17 -> rejected; history and cumulative remain unchanged', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Before Legacy Date', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created.id, '2026-09-18', 200);
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-17' }))
+      .toThrow('Daily Actual date cannot be earlier than the latest legacy actual date.');
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.actualQuantity).toBe(200); // unchanged
+    expect(unchanged.history).toHaveLength(1); // unchanged -- the rejected entry was never added
+  });
+
+  it('the earliest allowed date -- one day before rejected, the legacy date itself accepted -- confirms the boundary is inclusive (>=), not exclusive (>)', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Boundary Check', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created.id, '2026-09-18', 200);
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-17' })).toThrow();
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-18' })).not.toThrow();
+  });
+});
+
+describe('C-01B Small Corrective, Test E: same-date correction still REPLACES, not appends -- unaffected by this rule', () => {
+  it('an existing daily entry for a date on/after the legacy boundary is replaced, not duplicated, when corrected', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Same-Date Replace After Legacy', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+    setupWithLegacySnapshot(created.id, '2026-09-18', 200);
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-19' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-19' });
+    expect(corrected.history).toHaveLength(2); // legacy + ONE daily entry for 2026-09-19, not two
+    expect(corrected.actualQuantity).toBe(280); // 200 (legacy) + 80 (corrected), not 200 + 50 + 80
+  });
+});
