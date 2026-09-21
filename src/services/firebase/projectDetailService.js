@@ -242,6 +242,13 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
   const latestLegacyEntry = legacyEntries.reduce((latest, h) => (!latest || h.date > latest.date ? h : latest), null);
   const legacyBaseline = latestLegacyEntry ? latestLegacyEntry.actualQuantity : 0;
   const actualQuantity = legacyBaseline + dailyEntries.reduce((sum, h) => sum + h.dailyQuantity, 0);
+  // C-01B R2: same data-integrity invariant as the mock store -- Actual
+  // Quantity must never exceed Planned Quantity, evaluated against the
+  // RESULTING cumulative after same-date replace/append, rejected outright
+  // before any write is issued (no doc update call happens below this).
+  if (actualQuantity > activity.plannedQuantity) {
+    throw new Error(`Actual quantity cannot exceed planned quantity (${activity.plannedQuantity}). Please update the plan first.`);
+  }
   return updateDocById(path, activityId, { actualQuantity, history, updatedAt: new Date().toISOString() });
 }
 

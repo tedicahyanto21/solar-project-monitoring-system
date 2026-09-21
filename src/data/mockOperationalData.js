@@ -546,6 +546,19 @@ export function updateConstructionActivity(projectId, activityId, { dailyQuantit
     ? activity.history.map((h) => (h === existingDailyEntry ? { date: entryDate, dailyQuantity } : h))
     : [...activity.history, { date: entryDate, dailyQuantity }];
   const actualQuantity = computeCumulativeFromHistory(history);
+  // C-01B R2: Actual Quantity must never exceed Planned Quantity -- this
+  // is a data-integrity invariant, evaluated against the RESULTING
+  // cumulative (after same-date replace/append above has already been
+  // applied), not the raw daily input. An invalid write is rejected
+  // outright here, before anything is persisted -- never capped, never
+  // silently reduced, and never worked around by capping progress
+  // downstream (calculateConstructionProgress is intentionally left
+  // exactly as it was; this invariant is what keeps its plain
+  // actualQuantity/plannedQuantity division from ever exceeding 100% in
+  // the first place).
+  if (actualQuantity > activity.plannedQuantity) {
+    throw new Error(`Actual quantity cannot exceed planned quantity (${activity.plannedQuantity}). Please update the plan first.`);
+  }
 
   ops.constructionActivities = ops.constructionActivities.map((a) =>
     a.id === activityId ? { ...a, actualQuantity, history, updatedAt: new Date().toISOString() } : a

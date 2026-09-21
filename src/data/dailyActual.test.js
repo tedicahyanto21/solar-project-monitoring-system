@@ -340,3 +340,134 @@ describe('C-01B Small Corrective, Test E: same-date correction still REPLACES, n
     expect(corrected.actualQuantity).toBe(280); // 200 (legacy) + 80 (corrected), not 200 + 50 + 80
   });
 });
+
+// C-01B R2: Enforce Actual Quantity <= Plan Quantity. Data-integrity
+// invariant -- Actual represents completed work, Plan represents the
+// approved required quantity, so Actual can never legitimately exceed
+// Plan. Evaluated against the RESULTING cumulative (after same-date
+// replace/append), never by capping the value or the calculated progress.
+describe('C-01B R2, Tests 1-2: Actual at or below Plan is accepted', () => {
+  it('Test 1: Actual exactly equals Plan (100/100) -> accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Exact Match', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-20' });
+    expect(result.actualQuantity).toBe(100);
+  });
+
+  it('Test 2: Actual below Plan (80/100) -> accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Below Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-20' });
+    expect(result.actualQuantity).toBe(80);
+  });
+});
+
+describe('C-01B R2, Test 3: a new daily entry that would push cumulative over Plan is REJECTED, and the store is not mutated', () => {
+  it('Plan=100, existing cumulative=80, new daily=30 (would be 110) -> rejected, history/actualQuantity unchanged', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Over Plan New Date', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-18' });
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-19' }))
+      .toThrow('Actual quantity cannot exceed planned quantity (100). Please update the plan first.');
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.actualQuantity).toBe(80); // unchanged
+    expect(unchanged.history).toHaveLength(1); // the rejected entry was never added
+  });
+});
+
+describe('C-01B R2, Test 4: a same-date correction that lowers cumulative remains valid', () => {
+  it('Plan=100, existing date=30, replace same date with 50 -> cumulative=50 (not 30+50=80), accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Same-Date Valid Correction', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-18' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-18' });
+    expect(corrected.actualQuantity).toBe(50);
+    expect(corrected.history).toHaveLength(1);
+  });
+});
+
+describe('C-01B R2, Tests 5-6: same-date correction evaluated against the RESULTING cumulative, up to and including exactly Plan', () => {
+  it('Test 5: Plan=100, cumulative=80 (other date=60, this date=20), correct this date to 30 -> resulting cumulative=90 -> accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Resulting Cumulative Under Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 60, date: '2026-09-17' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 20, date: '2026-09-18' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-18' });
+    expect(corrected.actualQuantity).toBe(90); // 60 + 30
+  });
+
+  it('Test 6: Plan=100, cumulative=90 (other date=80, this date=10), correct this date to 20 -> resulting cumulative=100 (exactly Plan) -> accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Resulting Cumulative Exactly Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-17' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-18' });
+    const corrected = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 20, date: '2026-09-18' });
+    expect(corrected.actualQuantity).toBe(100);
+  });
+});
+
+describe('C-01B R2, Test 7: a NEW date causing cumulative to exceed Plan is rejected', () => {
+  it('Plan=100, cumulative=90, new date=20 (would be 110) -> rejected, history unchanged', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'New Date Over Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 90, date: '2026-09-17' });
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 20, date: '2026-09-19' })).toThrow();
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.actualQuantity).toBe(90);
+    expect(unchanged.history).toHaveLength(1);
+  });
+});
+
+describe('C-01B R2, Tests 8-9: backdated actual remains fully allowed, still subject to the Actual<=Plan invariant', () => {
+  it('Test 8: a backdated entry that keeps cumulative under Plan is accepted -- backdating itself is never restricted by this rule', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Backdated Under Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-23' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 40, date: '2026-09-24' });
+    // Entering an EARLIER date than existing entries -- backdating -- must
+    // still succeed on its own terms (this task does not reintroduce any
+    // "date must be >= latest" restriction).
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-22' });
+    expect(result.actualQuantity).toBe(80); // 30 + 40 + 10
+    expect(result.history).toHaveLength(3);
+  });
+
+  it('Test 9: a backdated entry that would push cumulative over Plan is rejected, exactly like any other date', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Backdated Over Plan', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 60, date: '2026-09-23' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-24' });
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 20, date: '2026-09-22' })).toThrow(); // 60+30+20=110 > 100
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.actualQuantity).toBe(90);
+    expect(unchanged.history).toHaveLength(2); // the rejected backdated entry was never added
+  });
+});
+
+describe('C-01B R2, Test 10: PM increasing Plan unblocks further Actual entry', () => {
+  it('Plan=100, Actual=100 (blocked from further entry), PM raises Plan to 120 -> further actual up to 120 is now accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Plan Increase Unblocks', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' });
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-19' })).toThrow();
+
+    const revised = updateConstructionActivityPlan(c01bProjectId, created.id, { plannedQuantity: 120 });
+    expect(revised.plannedQuantity).toBe(120);
+    expect(revised.actualQuantity).toBe(100); // PLAN edit never touches ACTUAL
+
+    const afterIncrease = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 15, date: '2026-09-19' });
+    expect(afterIncrease.actualQuantity).toBe(115); // now valid against the raised plan (<=120)
+  });
+});
+
+describe('C-01B R2, Test 11: regression -- existing valid C-01B daily history is unaffected by this rule', () => {
+  it('the C-01B worked example (100+150+125=375 against a generous plan) still produces the same result', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'C-01B Worked Example Regression', plannedQuantity: 500, unit: 'pcs', weight: 20 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 150, date: '2026-09-19' });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 125, date: '2026-09-20' });
+    expect(result.actualQuantity).toBe(375);
+  });
+});
+
+describe('C-01B R2, Test 12: Progress Engine regression -- valid Actual/Plan values still produce the expected progress, formula untouched', () => {
+  it('Plan=100, Actual=100 -> construction progress is exactly 100% (never artificially capped or altered by this change)', async () => {
+    const { calculateConstructionProgress } = await import('../services/repositories/progressRepository');
+    expect(calculateConstructionProgress([{ plannedQuantity: 100, actualQuantity: 100, weight: 100 }])).toBe(100);
+  });
+
+  it('Plan=500, Actual=250 -> construction progress is exactly 50%, matching the pre-existing C-01B regression test', async () => {
+    const { calculateConstructionProgress } = await import('../services/repositories/progressRepository');
+    expect(calculateConstructionProgress([{ plannedQuantity: 500, actualQuantity: 250, weight: 100 }])).toBe(50);
+  });
+});
