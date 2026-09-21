@@ -445,6 +445,15 @@ export function updateConstructionActivityPlan(projectId, activityId, { activity
   if (plannedQuantity !== undefined && !(plannedQuantity > 0)) {
     throw new Error('Planned Quantity must be greater than zero.');
   }
+  // C-01B R2.1: the Actual<=Plan invariant holds in BOTH directions -- a
+  // Plan reduction below the current Actual would retroactively put the
+  // activity into the same invalid state the Actual-write check prevents
+  // from the other side. Rejected outright: Actual/history are never
+  // touched, and Plan is never silently clamped -- the PM must explicitly
+  // choose a Plan value that is >= current Actual.
+  if (plannedQuantity !== undefined && plannedQuantity < current.actualQuantity) {
+    throw new Error(`Planned quantity cannot be lower than current actual quantity (${current.actualQuantity}).`);
+  }
   const patch = {};
   if (activity !== undefined) patch.activity = activity;
   if (plannedQuantity !== undefined) patch.plannedQuantity = plannedQuantity;
@@ -513,19 +522,13 @@ export function updateConstructionActivity(projectId, activityId, { dailyQuantit
     throw new Error('Actual Quantity cannot be negative.');
   }
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  // C-01B Small Corrective: a Daily Actual date must be >= the latest
-  // legacy snapshot's date. Backdating before that point would record a
-  // daily delta for a period the legacy system had already accounted for
-  // in its own cumulative snapshot, silently double-counting progress that
-  // predates daily tracking. The submitted date itself is never modified
-  // -- an invalid date is rejected outright, not clamped or moved.
-  const latestLegacyEntry = activity.history.reduce(
-    (latest, h) => (h.dailyQuantity === undefined && h.actualQuantity !== undefined && (!latest || h.date > latest.date) ? h : latest),
-    null
-  );
-  if (latestLegacyEntry && entryDate < latestLegacyEntry.date) {
-    throw new Error('Daily Actual date cannot be earlier than the latest legacy actual date.');
-  }
+  // C-01B R2.1: backdated Daily Actual is explicitly ALLOWED (a Site
+  // Manager may enter yesterday's work today) -- the C-01B Small
+  // Corrective's minimum-date-vs-legacy-snapshot restriction has been
+  // removed per this business-rule reversal. Date represents the actual
+  // work date, not the entry date, and is never itself restricted; the
+  // ONLY constraint on a backdated (or any) entry is the resulting
+  // cumulative Actual <= Planned Quantity check below.
   // C-01B, fixed business decision: a SECOND entry for the same date
   // REPLACES that day's dailyQuantity (a correction) -- it is never added
   // to the existing value and never creates a second entry for that date.

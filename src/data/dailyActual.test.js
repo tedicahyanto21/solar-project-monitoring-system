@@ -311,21 +311,28 @@ describe('C-01B Small Corrective, Test C: a date AFTER the latest legacy snapsho
   });
 });
 
-describe('C-01B Small Corrective, Test D: a date BEFORE the latest legacy snapshot is REJECTED', () => {
-  it('legacy 2026-09-18=200, Daily Actual dated 2026-09-17 -> rejected; history and cumulative remain unchanged', () => {
-    const created = createConstructionActivity(c01bProjectId, { activity: 'Before Legacy Date', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+describe('C-01B R2.1, STALE TEST UPDATED: a date BEFORE the latest legacy snapshot is now ACCEPTED (backdate restriction removed)', () => {
+  // C-01B R2.1 explicitly reverses the C-01B Small Corrective's minimum-
+  // date restriction: Site Manager may enter yesterday's (or any earlier
+  // day's) work today, so a Daily Actual dated BEFORE a legacy snapshot is
+  // no longer rejected on that basis alone -- only the Actual<=Plan
+  // invariant (tested separately, C-01B R2/R2.1) can still reject a write.
+  // These two tests replace the ones that asserted the now-removed
+  // rejection; they are stale because the underlying business rule they
+  // verified was intentionally reversed, not because they were wrong when
+  // written.
+  it('legacy 2026-09-18=200, Daily Actual dated 2026-09-17=50 -> accepted; cumulative = 250 (Example 5\'s shape, generous Plan)', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Before Legacy Date Now Allowed', plannedQuantity: 500, unit: 'pcs', weight: 10 });
     setupWithLegacySnapshot(created.id, '2026-09-18', 200);
-    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-17' }))
-      .toThrow('Daily Actual date cannot be earlier than the latest legacy actual date.');
-    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
-    expect(unchanged.actualQuantity).toBe(200); // unchanged
-    expect(unchanged.history).toHaveLength(1); // unchanged -- the rejected entry was never added
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-17' });
+    expect(result.actualQuantity).toBe(250);
+    expect(result.history).toHaveLength(2); // legacy entry preserved + new backdated entry added
   });
 
-  it('the earliest allowed date -- one day before rejected, the legacy date itself accepted -- confirms the boundary is inclusive (>=), not exclusive (>)', () => {
-    const created = createConstructionActivity(c01bProjectId, { activity: 'Boundary Check', plannedQuantity: 500, unit: 'pcs', weight: 10 });
+  it('a date before the legacy snapshot is accepted just as readily as the legacy date itself or a later date -- no minimum-date boundary exists any more', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'No Boundary Any More', plannedQuantity: 500, unit: 'pcs', weight: 10 });
     setupWithLegacySnapshot(created.id, '2026-09-18', 200);
-    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-17' })).toThrow();
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-17' })).not.toThrow();
     expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 10, date: '2026-09-18' })).not.toThrow();
   });
 });
@@ -469,5 +476,82 @@ describe('C-01B R2, Test 12: Progress Engine regression -- valid Actual/Plan val
   it('Plan=500, Actual=250 -> construction progress is exactly 50%, matching the pre-existing C-01B regression test', async () => {
     const { calculateConstructionProgress } = await import('../services/repositories/progressRepository');
     expect(calculateConstructionProgress([{ plannedQuantity: 500, actualQuantity: 250, weight: 100 }])).toBe(50);
+  });
+});
+
+// C-01B R2.1: Final Actual/Plan Integrity Correction. The invariant now
+// holds in BOTH directions: an Actual write is rejected if the resulting
+// cumulative would exceed the current Plan (C-01B R2, above), AND a Plan
+// write is rejected if the new Plan would fall below the current Actual.
+describe('C-01B R2.1, Finding #2: Plan cannot be reduced below current Actual', () => {
+  it('Test 3: Plan=100, Actual=100, PM tries Plan=80 -> rejected', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Plan Reduce To Below Actual', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' });
+    expect(() => updateConstructionActivityPlan(c01bProjectId, created.id, { plannedQuantity: 80 }))
+      .toThrow('Planned quantity cannot be lower than current actual quantity (100).');
+  });
+
+  it('Test 4: Plan=100, Actual=80, PM changes Plan=90 -> accepted', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Plan Reduce Above Actual', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-18' });
+    const revised = updateConstructionActivityPlan(c01bProjectId, created.id, { plannedQuantity: 90 });
+    expect(revised.plannedQuantity).toBe(90);
+    expect(revised.actualQuantity).toBe(80); // untouched
+  });
+
+  it('Test 5: Plan=100, Actual=80, PM changes Plan=70 -> rejected (below current Actual)', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Plan Reduce Below Actual', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-18' });
+    expect(() => updateConstructionActivityPlan(c01bProjectId, created.id, { plannedQuantity: 70 })).toThrow();
+  });
+
+  it('Test 10: a rejected Plan reduction does not mutate the stored Plan (or Actual/history)', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Rejected Plan Reduction No Mutation', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 80, date: '2026-09-18' });
+    expect(() => updateConstructionActivityPlan(c01bProjectId, created.id, { plannedQuantity: 70 })).toThrow();
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.plannedQuantity).toBe(100); // unchanged -- never clamped, never partially applied
+    expect(unchanged.actualQuantity).toBe(80); // unchanged
+    expect(unchanged.history).toHaveLength(1); // unchanged
+  });
+
+  it('a Plan edit that also changes other PLAN fields (activity/unit/weight) alongside a valid plannedQuantity still succeeds normally', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Combined Plan Edit', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 50, date: '2026-09-18' });
+    const revised = updateConstructionActivityPlan(c01bProjectId, created.id, { activity: 'Renamed Combined Plan Edit', plannedQuantity: 200, weight: 25 });
+    expect(revised.activity).toBe('Renamed Combined Plan Edit');
+    expect(revised.plannedQuantity).toBe(200);
+    expect(revised.weight).toBe(25);
+  });
+
+  it('a Plan edit that does not touch plannedQuantity at all is never blocked by this rule, regardless of current Actual', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Non-Quantity Plan Edit', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 100, date: '2026-09-18' }); // Actual == Plan already
+    const revised = updateConstructionActivityPlan(c01bProjectId, created.id, { weight: 15 });
+    expect(revised.weight).toBe(15);
+    expect(revised.plannedQuantity).toBe(100);
+  });
+});
+
+describe('C-01B R2.1, Finding #1 + Example 5: backdated Actual, exact worked example from the spec', () => {
+  it('Plan=100, existing 2026-09-20=40 and 2026-09-21=30 (today 2026-09-23), user enters 2026-09-19=20 -> resulting Actual=90 -> accepted; backdate itself is never rejected', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Example 5 Worked Case', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 40, date: '2026-09-20' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-21' });
+    const result = updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 20, date: '2026-09-19' });
+    expect(result.actualQuantity).toBe(90);
+    expect(result.history).toHaveLength(3);
+  });
+
+  it('Test 7: a backdated entry causing Actual > Plan is rejected -- backdating does not exempt a write from the Actual<=Plan invariant', () => {
+    const created = createConstructionActivity(c01bProjectId, { activity: 'Backdate Plan Violation', plannedQuantity: 100, unit: 'pcs', weight: 10 });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 40, date: '2026-09-20' });
+    updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 30, date: '2026-09-21' });
+    // 40 + 30 + 40 = 110 > 100 -- rejected even though 2026-09-19 predates both existing entries.
+    expect(() => updateConstructionActivity(c01bProjectId, created.id, { dailyQuantity: 40, date: '2026-09-19' }))
+      .toThrow('Actual quantity cannot exceed planned quantity (100). Please update the plan first.');
+    const unchanged = getOperations(c01bProjectId).constructionActivities.find((a) => a.id === created.id);
+    expect(unchanged.actualQuantity).toBe(70);
+    expect(unchanged.history).toHaveLength(2);
   });
 });

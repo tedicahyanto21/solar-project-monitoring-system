@@ -189,6 +189,15 @@ export async function createConstructionActivity(projectId, { activity, plannedQ
 export async function updateConstructionActivityPlan(projectId, activityId, { activity, plannedQuantity, unit, weight }) {
   if (plannedQuantity !== undefined && !(plannedQuantity > 0)) throw new Error('Planned Quantity must be greater than zero.');
   const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.CONSTRUCTION_ACTIVITIES);
+  // C-01B R2.1: the Actual<=Plan invariant holds in BOTH directions -- see
+  // the mock store's identical check for the rationale. Actual/history are
+  // never touched here, and Plan is never silently clamped.
+  if (plannedQuantity !== undefined) {
+    const current = await getOneDoc(path, activityId);
+    if (current && plannedQuantity < current.actualQuantity) {
+      throw new Error(`Planned quantity cannot be lower than current actual quantity (${current.actualQuantity}).`);
+    }
+  }
   const patch = { updatedAt: new Date().toISOString() };
   if (activity !== undefined) patch.activity = activity;
   if (plannedQuantity !== undefined) patch.plannedQuantity = plannedQuantity;
@@ -223,16 +232,13 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
   if (!activity) return null;
   if (activity.plannedQuantity <= 0) throw new Error('Planned Quantity must be greater than zero before Actual Quantity can be recorded.');
   const entryDate = date || new Date().toISOString().slice(0, 10);
-  // C-01B Small Corrective: Daily Actual date must be >= the latest legacy
-  // snapshot's date -- see the mock store's identical validation for the
-  // rationale (backdating before that point would double-count progress
-  // the legacy cumulative snapshot already accounted for). The submitted
-  // date is never modified, only rejected when invalid.
-  const preExistingLegacyEntries = (activity.history || []).filter((h) => h.dailyQuantity === undefined && h.actualQuantity !== undefined);
-  const latestPreExistingLegacyEntry = preExistingLegacyEntries.reduce((latest, h) => (!latest || h.date > latest.date ? h : latest), null);
-  if (latestPreExistingLegacyEntry && entryDate < latestPreExistingLegacyEntry.date) {
-    throw new Error('Daily Actual date cannot be earlier than the latest legacy actual date.');
-  }
+  // C-01B R2.1: backdated Daily Actual is explicitly ALLOWED (a Site
+  // Manager may enter yesterday's work today) -- the C-01B Small
+  // Corrective's minimum-date-vs-legacy-snapshot restriction has been
+  // removed per this business-rule reversal. Date represents the actual
+  // work date, not the entry date, and is never itself restricted; the
+  // ONLY constraint on a backdated (or any) entry is the resulting
+  // cumulative Actual <= Planned Quantity check below.
   const existingDailyEntry = (activity.history || []).find((h) => h.date === entryDate && h.dailyQuantity !== undefined);
   const history = existingDailyEntry
     ? activity.history.map((h) => (h === existingDailyEntry ? { date: entryDate, dailyQuantity } : h))
