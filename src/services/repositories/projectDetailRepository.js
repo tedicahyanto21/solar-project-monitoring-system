@@ -28,7 +28,11 @@ import {
   addHseDocument,
   updateHseDocument as storeUpdateHseDocument,
   createProcurementMilestone as storeCreateProcurementMilestone,
+  updateProcurementMilestonePlan as storeUpdateProcurementMilestonePlan,
   updateProcurementMilestone as storeUpdateProcurementMilestone,
+  createCommissioningItem as storeCreateCommissioningItem,
+  updateCommissioningItemPlan as storeUpdateCommissioningItemPlan,
+  updateCommissioningItem as storeUpdateCommissioningItem,
   createConstructionActivity as storeCreateConstructionActivity,
   updateConstructionActivityPlan as storeUpdateConstructionActivityPlan,
   updateConstructionActivity as storeUpdateConstructionActivity,
@@ -113,12 +117,19 @@ export async function getProcurementMilestones(projectId) {
   return isLocalMode ? (getOperations(projectId)?.procurementMilestones ?? []) : fb.getProcurementMilestones(projectId);
 }
 
-// FT-5 A5: milestones are configurable, not a hardcoded closed list --
-// this is how a project adds one beyond the seeded defaults.
+// FT-5 A5 / C-01C: milestones are configurable, not a hardcoded closed
+// list -- PLAN owner (PROJECT_MANAGER) creates one beyond the seeded
+// defaults.
 export async function createProcurementMilestone(projectId, milestone) {
   return isLocalMode ? storeCreateProcurementMilestone(projectId, milestone) : fb.createProcurementMilestone(projectId, milestone);
 }
 
+// C-01C: PLAN-only edit (PROJECT_MANAGER) -- name/weight/plannedDate.
+export async function updateProcurementMilestonePlan(projectId, milestoneId, patch) {
+  return isLocalMode ? storeUpdateProcurementMilestonePlan(projectId, milestoneId, patch) : fb.updateProcurementMilestonePlan(projectId, milestoneId, patch);
+}
+
+// C-01C: ACTUAL/progress-only edit (SCM) -- progressContribution/actualDate/status.
 export async function updateProcurementMilestone(projectId, milestoneId, patch) {
   return isLocalMode ? storeUpdateProcurementMilestone(projectId, milestoneId, patch) : fb.updateProcurementMilestone(projectId, milestoneId, patch);
 }
@@ -158,6 +169,20 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
 
 export async function getCommissioningChecklist(projectId) {
   return isLocalMode ? (getOperations(projectId)?.commissioningChecklist ?? []) : fb.getCommissioningChecklist(projectId);
+}
+
+// C-01C: PLAN owner PROJECT_MANAGER.
+export async function createCommissioningItem(projectId, item) {
+  return isLocalMode ? storeCreateCommissioningItem(projectId, item) : fb.createCommissioningItem(projectId, item);
+}
+
+export async function updateCommissioningItemPlan(projectId, itemId, patch) {
+  return isLocalMode ? storeUpdateCommissioningItemPlan(projectId, itemId, patch) : fb.updateCommissioningItemPlan(projectId, itemId, patch);
+}
+
+// C-01C: ACTUAL owner ENGINEERING / SITE_MANAGER -- completionStatus only.
+export async function updateCommissioningItem(projectId, itemId, patch) {
+  return isLocalMode ? storeUpdateCommissioningItem(projectId, itemId, patch) : fb.updateCommissioningItem(projectId, itemId, patch);
 }
 
 export async function getAssignments(projectId) {

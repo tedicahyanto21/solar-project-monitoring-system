@@ -388,19 +388,93 @@ export function updateHseDocument(projectId, docId, patch) {
 }
 
 // --- FT-5 A5: Procurement milestones (configurable) -----------------------
-export function createProcurementMilestone(projectId, milestone) {
+// C-01C: PLAN owner (PROJECT_MANAGER) creates a milestone with only name/
+// weight/plannedDate -- ACTUAL fields always initialize to the same safe
+// defaults regardless of what the caller passes, exactly like
+// createConstructionActivity's actualQuantity=0/history=[] pattern. The
+// random suffix (not just Date.now()) avoids an ID collision if two
+// milestones are created within the same millisecond (see the identical
+// fix applied to createConstructionActivity).
+export function createProcurementMilestone(projectId, { name, weight, plannedDate }) {
   const ops = store.get(projectId);
   if (!ops) return null;
-  const record = { id: `${projectId}-pm-${Date.now()}`, progressContribution: 0, status: 'Not Started', actualDate: null, ...milestone };
+  const record = {
+    id: `${projectId}-pm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name, weight, plannedDate,
+    progressContribution: 0, status: 'Not Started', actualDate: null,
+  };
   ops.procurementMilestones = [...ops.procurementMilestones, record];
   return record;
 }
 
-export function updateProcurementMilestone(projectId, milestoneId, patch) {
+// C-01C: PLAN-only edit (PROJECT_MANAGER) -- name/weight/plannedDate only.
+// Structural guarantee, not just convention: only these three fields are
+// ever assigned here, mirroring updateConstructionActivityPlan.
+export function updateProcurementMilestonePlan(projectId, milestoneId, { name, weight, plannedDate }) {
   const ops = store.get(projectId);
   if (!ops) return null;
+  const patch = {};
+  if (name !== undefined) patch.name = name;
+  if (weight !== undefined) patch.weight = weight;
+  if (plannedDate !== undefined) patch.plannedDate = plannedDate;
   ops.procurementMilestones = ops.procurementMilestones.map((m) => (m.id === milestoneId ? { ...m, ...patch } : m));
   return ops.procurementMilestones.find((m) => m.id === milestoneId) ?? null;
+}
+
+// C-01C: ACTUAL/progress-only edit (SCM) -- progressContribution/
+// actualDate/status only. Structural guarantee: PLAN fields (name/weight/
+// plannedDate) have no parameter here and can never be written by this
+// function, mirroring updateConstructionActivity's ACTUAL-only boundary.
+export function updateProcurementMilestone(projectId, milestoneId, { progressContribution, actualDate, status }) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  const patch = {};
+  if (progressContribution !== undefined) patch.progressContribution = progressContribution;
+  if (actualDate !== undefined) patch.actualDate = actualDate;
+  if (status !== undefined) patch.status = status;
+  ops.procurementMilestones = ops.procurementMilestones.map((m) => (m.id === milestoneId ? { ...m, ...patch } : m));
+  return ops.procurementMilestones.find((m) => m.id === milestoneId) ?? null;
+}
+
+// C-01C: Commissioning CRUD, following the exact same PLAN/ACTUAL split
+// pattern as Construction/Procurement above -- no new architecture, just
+// the same established convention applied to the third component.
+// Canonical fields preserved unchanged: {id, item, weight, completionStatus}
+// -- no progressContribution, no quantities, per the locked C-01C decision
+// that Commissioning progress remains completionStatus + weight only.
+export function createCommissioningItem(projectId, { item, weight }) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  const record = {
+    id: `${projectId}-com-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    item, weight, completionStatus: 'Pending',
+  };
+  ops.commissioningChecklist = [...ops.commissioningChecklist, record];
+  return record;
+}
+
+// PLAN-only edit (PROJECT_MANAGER) -- item/weight only.
+export function updateCommissioningItemPlan(projectId, itemId, { item, weight }) {
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  const patch = {};
+  if (item !== undefined) patch.item = item;
+  if (weight !== undefined) patch.weight = weight;
+  ops.commissioningChecklist = ops.commissioningChecklist.map((c) => (c.id === itemId ? { ...c, ...patch } : c));
+  return ops.commissioningChecklist.find((c) => c.id === itemId) ?? null;
+}
+
+// ACTUAL-only edit (ENGINEERING / SITE_MANAGER) -- completionStatus only,
+// restricted to the two allowed values. Structural guarantee: item/weight
+// have no parameter here and can never be written by this function.
+export function updateCommissioningItem(projectId, itemId, { completionStatus }) {
+  if (completionStatus !== 'Complete' && completionStatus !== 'Pending') {
+    throw new Error('Completion status must be either "Complete" or "Pending".');
+  }
+  const ops = store.get(projectId);
+  if (!ops) return null;
+  ops.commissioningChecklist = ops.commissioningChecklist.map((c) => (c.id === itemId ? { ...c, completionStatus } : c));
+  return ops.commissioningChecklist.find((c) => c.id === itemId) ?? null;
 }
 
 // --- FT-5 A6 / Master Prompt #3: Construction PLAN vs ACTUAL --------------

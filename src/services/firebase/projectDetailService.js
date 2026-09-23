@@ -160,12 +160,34 @@ export async function getProcurementMilestones(projectId) {
   return getAllDocs(subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES));
 }
 
-export async function createProcurementMilestone(projectId, milestone) {
-  return createDoc(subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES), { status: 'Not Started', progressContribution: 0, actualDate: null, ...milestone });
+// C-01C: PLAN owner (PROJECT_MANAGER) creates with only name/weight/
+// plannedDate -- ACTUAL fields always initialize to the same safe
+// defaults regardless of caller input, mirroring the mock store.
+export async function createProcurementMilestone(projectId, { name, weight, plannedDate }) {
+  return createDoc(subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES), {
+    name, weight, plannedDate, status: 'Not Started', progressContribution: 0, actualDate: null,
+  });
 }
 
-export async function updateProcurementMilestone(projectId, milestoneId, patch) {
-  return updateDocById(subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES), milestoneId, patch);
+// C-01C: PLAN-only edit (PROJECT_MANAGER).
+export async function updateProcurementMilestonePlan(projectId, milestoneId, { name, weight, plannedDate }) {
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES);
+  const patch = {};
+  if (name !== undefined) patch.name = name;
+  if (weight !== undefined) patch.weight = weight;
+  if (plannedDate !== undefined) patch.plannedDate = plannedDate;
+  return updateDocById(path, milestoneId, patch);
+}
+
+// C-01C: ACTUAL/progress-only edit (SCM) -- progressContribution/
+// actualDate/status only, matching the Firestore rule's field allowlist.
+export async function updateProcurementMilestone(projectId, milestoneId, { progressContribution, actualDate, status }) {
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.PROCUREMENT_MILESTONES);
+  const patch = {};
+  if (progressContribution !== undefined) patch.progressContribution = progressContribution;
+  if (actualDate !== undefined) patch.actualDate = actualDate;
+  if (status !== undefined) patch.status = status;
+  return updateDocById(path, milestoneId, patch);
 }
 
 // --- Construction activities -----------------------------------------------------
@@ -261,4 +283,32 @@ export async function updateConstructionActivity(projectId, activityId, { dailyQ
 // --- Commissioning items -----------------------------------------------------
 export async function getCommissioningChecklist(projectId) {
   return getAllDocs(subPath(projectId, PROJECT_SUBCOLLECTIONS.COMMISSIONING_ITEMS));
+}
+
+// C-01C: Commissioning CRUD, same PLAN/ACTUAL split pattern as
+// Construction/Procurement. Canonical fields unchanged:
+// {id, item, weight, completionStatus} -- no progressContribution.
+export async function createCommissioningItem(projectId, { item, weight }) {
+  return createDoc(subPath(projectId, PROJECT_SUBCOLLECTIONS.COMMISSIONING_ITEMS), {
+    item, weight, completionStatus: 'Pending',
+  });
+}
+
+// PLAN-only edit (PROJECT_MANAGER) -- item/weight only.
+export async function updateCommissioningItemPlan(projectId, itemId, { item, weight }) {
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.COMMISSIONING_ITEMS);
+  const patch = {};
+  if (item !== undefined) patch.item = item;
+  if (weight !== undefined) patch.weight = weight;
+  return updateDocById(path, itemId, patch);
+}
+
+// ACTUAL-only edit (ENGINEERING / SITE_MANAGER) -- completionStatus only,
+// restricted to the two allowed values.
+export async function updateCommissioningItem(projectId, itemId, { completionStatus }) {
+  if (completionStatus !== 'Complete' && completionStatus !== 'Pending') {
+    throw new Error('Completion status must be either "Complete" or "Pending".');
+  }
+  const path = subPath(projectId, PROJECT_SUBCOLLECTIONS.COMMISSIONING_ITEMS);
+  return updateDocById(path, itemId, { completionStatus });
 }

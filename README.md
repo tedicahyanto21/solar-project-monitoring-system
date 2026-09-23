@@ -118,6 +118,42 @@ path in isolation -- neither approach ever touches a real Firebase project.
 `npm test` is safe to run repeatedly on any machine, with or without a
 configured `.env`, and never modifies real Firestore data.
 
+## Procurement & Commissioning operational input
+
+**C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed
+but PM had no way to create new milestones, and Commissioning had no
+operational input path at all -- only a Progress tab summary reading
+static seed data.
+
+**Confirmed business rules** (see the C-01C audit for how these were
+derived): Procurement PLAN (`name`/`weight`/`plannedDate`) is
+PROJECT_MANAGER-owned; Procurement ACTUAL/progress
+(`progressContribution`/`actualDate`/`status`) remains SCM-owned, unchanged
+from before. Commissioning PLAN (`item`/`weight`) is PROJECT_MANAGER-owned;
+Commissioning ACTUAL (`completionStatus`, strictly `Complete`/`Pending`) is
+owned by ENGINEERING and SITE_MANAGER -- matching the `firestore.rules`
+write access those two roles already had for `commissioningItems` since
+MP#1/C-01A, before any application code existed to reach it.
+
+Both follow the exact PLAN/ACTUAL split pattern already established for
+Construction (Master Prompt #3): `createProcurementMilestone`/
+`updateProcurementMilestonePlan` vs `updateProcurementMilestone` (ACTUAL);
+`createCommissioningItem`/`updateCommissioningItemPlan` vs
+`updateCommissioningItem` (ACTUAL). No new collections, no new fields, no
+Progress Engine changes -- `calculateProcurementProgress`/
+`calculateCommissioningProgress` are untouched and unaware this input path
+changed.
+
+**Terminology note:** SPMS's own business-process documentation
+(`docs/03_Business_Process`) uses "Procurement Manager" and "Commissioning
+Engineer" as the responsible roles for these physical processes. Neither
+term is a literal application role -- this is an explicit SPMS
+implementation decision mapping "Procurement Manager" onto the existing
+`SCM` role and "Commissioning Engineer" onto `ENGINEERING`/`SITE_MANAGER`,
+not a documented 1:1 correspondence. `SPMS-DOC-05` (Project Blueprint),
+cited elsewhere as the source of truth for the role architecture, is not
+present in this repository's `docs/` folder to verify further.
+
 ## Daily Actual & PM Actual access
 
 **C-01B (UAT correction):** the business agreement was that both

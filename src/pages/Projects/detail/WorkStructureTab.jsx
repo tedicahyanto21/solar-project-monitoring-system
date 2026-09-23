@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { Box, Stack, Typography, Paper, TextField, Alert, Button, Checkbox, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, MenuItem } from '@mui/material';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import {
-  getMilestones, getProcurementMilestones, updateProcurementMilestone,
+  getMilestones, getProcurementMilestones, createProcurementMilestone, updateProcurementMilestonePlan, updateProcurementMilestone,
   getConstructionActivities, createConstructionActivity, updateConstructionActivityPlan,
+  getCommissioningChecklist, createCommissioningItem, updateCommissioningItemPlan, updateCommissioningItem,
 } from '../../../services/repositories/projectDetailRepository';
 import { setProjectWeights, isValidWeightTotal } from '../../../services/repositories/progressRepository';
 import ProjectProgressBar from '../../../components/projects/ProjectProgressBar';
@@ -18,12 +19,26 @@ import { ROLES } from '../../../constants/roles';
 // PROJECT_MANAGER owns delivery; HEAD_PM/SUPER_ADMIN oversee).
 const CAN_MANAGE_WEIGHTS = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.PROJECT_MANAGER];
 const CAN_MANAGE_PROCUREMENT = [ROLES.SCM, ROLES.SUPER_ADMIN];
+// C-01C, locked business rule 2.1: Procurement PLAN (name/weight/
+// plannedDate) is PROJECT_MANAGER-owned, separate from ACTUAL/progress
+// (SCM, CAN_MANAGE_PROCUREMENT above) -- mirrors the Construction PLAN/
+// ACTUAL split already established in this file.
+const CAN_MANAGE_PROCUREMENT_PLAN = [ROLES.PROJECT_MANAGER, ROLES.SUPER_ADMIN];
+const PROCUREMENT_PLAN_EMPTY = { name: '', weight: '', plannedDate: '' };
 // Master Prompt #3, Section 4: Construction PLAN (activity/plannedQuantity/
 // unit/weight) is PROJECT_MANAGER territory -- ACTUAL entry (by PROJECT_MANAGER
 // or SITE_MANAGER, C-01B) happens in ProgressTab instead (Section 12: no
 // PLAN editor duplicated there, no ACTUAL editor duplicated here).
 const CAN_MANAGE_CONSTRUCTION_PLAN = [ROLES.SUPER_ADMIN, ROLES.PROJECT_MANAGER];
 const CONSTRUCTION_PLAN_EMPTY = { activity: '', plannedQuantity: '', unit: 'units', weight: '' };
+// C-01C, locked business rule 2.3/2.4: Commissioning PLAN (item/weight) is
+// PROJECT_MANAGER-owned; ACTUAL (completionStatus only, Complete/Pending)
+// is owned by ENGINEERING and SITE_MANAGER -- matching the Firestore rule
+// that already defined this write access (C-01A/MP#1) before any
+// application code existed to reach it.
+const CAN_MANAGE_COMMISSIONING_PLAN = [ROLES.SUPER_ADMIN, ROLES.PROJECT_MANAGER];
+const CAN_MANAGE_COMMISSIONING_ACTUAL = [ROLES.SUPER_ADMIN, ROLES.ENGINEERING, ROLES.SITE_MANAGER];
+const COMMISSIONING_PLAN_EMPTY = { item: '', weight: '' };
 
 function formatDate(iso) {
   if (!iso) return '\u2014';
@@ -46,14 +61,27 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
   const { profile } = useAuth();
   const canManageWeights = CAN_MANAGE_WEIGHTS.includes(profile?.role);
   const canManageProcurement = CAN_MANAGE_PROCUREMENT.includes(profile?.role);
+  const canManageProcurementPlan = CAN_MANAGE_PROCUREMENT_PLAN.includes(profile?.role);
   const [milestones, setMilestones] = useState([]);
   const [procurementMilestones, setProcurementMilestones] = useState([]);
+  const [procurementPlanDialogOpen, setProcurementPlanDialogOpen] = useState(false);
+  const [editingMilestoneId, setEditingMilestoneId] = useState(null);
+  const [procurementPlanForm, setProcurementPlanForm] = useState(PROCUREMENT_PLAN_EMPTY);
+  const [procurementPlanError, setProcurementPlanError] = useState('');
   const canManageConstructionPlan = CAN_MANAGE_CONSTRUCTION_PLAN.includes(profile?.role);
   const [constructionActivities, setConstructionActivities] = useState([]);
   const [planDialogOpen, setPlanDialogOpen] = useState(false);
   const [editingActivityId, setEditingActivityId] = useState(null);
   const [planForm, setPlanForm] = useState(CONSTRUCTION_PLAN_EMPTY);
   const [planError, setPlanError] = useState('');
+  const canManageCommissioningPlan = CAN_MANAGE_COMMISSIONING_PLAN.includes(profile?.role);
+  const canManageCommissioningActual = CAN_MANAGE_COMMISSIONING_ACTUAL.includes(profile?.role);
+  const [commissioningChecklist, setCommissioningChecklist] = useState([]);
+  const [commissioningPlanDialogOpen, setCommissioningPlanDialogOpen] = useState(false);
+  const [editingCommissioningItemId, setEditingCommissioningItemId] = useState(null);
+  const [commissioningPlanForm, setCommissioningPlanForm] = useState(COMMISSIONING_PLAN_EMPTY);
+  const [commissioningPlanError, setCommissioningPlanError] = useState('');
+  const [commissioningActualError, setCommissioningActualError] = useState('');
   const [weights, setWeights] = useState(progress?.weights ?? {});
   const [saved, setSaved] = useState(true);
   const [error, setError] = useState('');
@@ -66,11 +94,16 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
     getConstructionActivities(projectId).then(setConstructionActivities);
   }
 
+  function loadCommissioning() {
+    getCommissioningChecklist(projectId).then(setCommissioningChecklist);
+  }
+
   useEffect(() => {
     let cancelled = false;
     getMilestones(projectId).then((data) => { if (!cancelled) setMilestones(data); });
     getProcurementMilestones(projectId).then((data) => { if (!cancelled) setProcurementMilestones(data); });
     getConstructionActivities(projectId).then((data) => { if (!cancelled) setConstructionActivities(data); });
+    getCommissioningChecklist(projectId).then((data) => { if (!cancelled) setCommissioningChecklist(data); });
     return () => { cancelled = true; };
   }, [projectId]);
 
@@ -126,6 +159,104 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
     });
     loadProcurement();
     onWeightsChanged?.();
+  }
+
+  // C-01C, business rule 2.1: PLAN capability for Procurement Milestones
+  // (PROJECT_MANAGER) -- mirrors Construction's openAddActivity/
+  // openEditActivity/handleSavePlan pattern exactly. Never reads or writes
+  // progressContribution/actualDate/status, which stay exclusively in
+  // handleMilestoneContribution above (SCM's ACTUAL entry point).
+  function openAddMilestone() {
+    if (!canManageProcurementPlan) return; // defense in depth, not just a hidden button
+    setEditingMilestoneId(null);
+    setProcurementPlanForm(PROCUREMENT_PLAN_EMPTY);
+    setProcurementPlanError('');
+    setProcurementPlanDialogOpen(true);
+  }
+
+  function openEditMilestone(milestone) {
+    if (!canManageProcurementPlan) return;
+    setEditingMilestoneId(milestone.id);
+    setProcurementPlanForm({ name: milestone.name, weight: milestone.weight, plannedDate: milestone.plannedDate ?? '' });
+    setProcurementPlanError('');
+    setProcurementPlanDialogOpen(true);
+  }
+
+  async function handleSaveProcurementPlan() {
+    if (!canManageProcurementPlan) return;
+    if (!procurementPlanForm.name.trim() || !procurementPlanForm.weight) return;
+    setProcurementPlanError('');
+    const payload = {
+      name: procurementPlanForm.name,
+      weight: Number(procurementPlanForm.weight),
+      plannedDate: procurementPlanForm.plannedDate || null,
+    };
+    try {
+      if (editingMilestoneId) {
+        await updateProcurementMilestonePlan(projectId, editingMilestoneId, payload);
+      } else {
+        await createProcurementMilestone(projectId, payload);
+      }
+      setProcurementPlanDialogOpen(false);
+      loadProcurement();
+      onWeightsChanged?.();
+    } catch (err) {
+      setProcurementPlanError(err.message);
+    }
+  }
+
+  // C-01C, business rules 2.3/2.4: Commissioning PLAN (PROJECT_MANAGER,
+  // item/weight) and ACTUAL (ENGINEERING/SITE_MANAGER, completionStatus
+  // only) -- same PLAN/ACTUAL split pattern as Construction and
+  // Procurement above. No progressContribution is ever introduced here;
+  // completion is strictly binary (Complete/Pending), matching the
+  // existing calculateCommissioningProgress formula this feeds.
+  function openAddCommissioningItem() {
+    if (!canManageCommissioningPlan) return;
+    setEditingCommissioningItemId(null);
+    setCommissioningPlanForm(COMMISSIONING_PLAN_EMPTY);
+    setCommissioningPlanError('');
+    setCommissioningPlanDialogOpen(true);
+  }
+
+  function openEditCommissioningItem(item) {
+    if (!canManageCommissioningPlan) return;
+    setEditingCommissioningItemId(item.id);
+    setCommissioningPlanForm({ item: item.item, weight: item.weight });
+    setCommissioningPlanError('');
+    setCommissioningPlanDialogOpen(true);
+  }
+
+  async function handleSaveCommissioningPlan() {
+    if (!canManageCommissioningPlan) return;
+    if (!commissioningPlanForm.item.trim() || !commissioningPlanForm.weight) return;
+    setCommissioningPlanError('');
+    const payload = { item: commissioningPlanForm.item, weight: Number(commissioningPlanForm.weight) };
+    try {
+      if (editingCommissioningItemId) {
+        await updateCommissioningItemPlan(projectId, editingCommissioningItemId, payload);
+      } else {
+        await createCommissioningItem(projectId, payload);
+      }
+      setCommissioningPlanDialogOpen(false);
+      loadCommissioning();
+      onWeightsChanged?.();
+    } catch (err) {
+      setCommissioningPlanError(err.message);
+    }
+  }
+
+  async function handleToggleCommissioningStatus(itemId, currentStatus) {
+    if (!canManageCommissioningActual) return; // defense in depth, not just a hidden control
+    setCommissioningActualError('');
+    const nextStatus = currentStatus === 'Complete' ? 'Pending' : 'Complete';
+    try {
+      await updateCommissioningItem(projectId, itemId, { completionStatus: nextStatus });
+      loadCommissioning();
+      onWeightsChanged?.();
+    } catch (err) {
+      setCommissioningActualError(err.message);
+    }
   }
 
   // Master Prompt #3, Section 4: PM PLAN capability for Construction
@@ -250,14 +381,28 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
       </Paper>
 
       <Paper sx={{ p: 2.5 }}>
-        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1.5 }}>Procurement Milestones</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Configurable per project (Sprint FT-5 A5) -- these are not the only possible
-          milestones. Progress Contribution feeds the Procurement component above.
-        </Typography>
+        <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+          <Box>
+            <Typography variant="subtitle1" fontWeight={700}>Procurement Milestones</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Configurable per project (Sprint FT-5 A5) -- these are not the only possible
+              milestones. Name, Weight, and Planned Date are PROJECT_MANAGER-owned PLAN
+              fields (C-01C); Progress Contribution/Status/Actual Date are SCM-owned ACTUAL
+              fields and feed the Procurement component above.
+            </Typography>
+          </Box>
+          {canManageProcurementPlan && (
+            <Button size="small" startIcon={<AddRoundedIcon />} onClick={openAddMilestone}>
+              Add Milestone
+            </Button>
+          )}
+        </Stack>
         <Stack spacing={1.5}>
+          {procurementMilestones.length === 0 && (
+            <Typography variant="body2" color="text.secondary">No procurement milestones defined yet.</Typography>
+          )}
           {procurementMilestones.map((m) => (
-            <Box key={m.id} sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr 1fr 1fr 1.5fr' }, alignItems: 'center' }}>
+            <Box key={m.id} sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr 1fr 1fr 1.5fr auto' }, alignItems: 'center' }}>
               <Typography variant="body2" fontWeight={600}>{m.name}</Typography>
               <Typography variant="caption" color="text.secondary">Planned: {formatDate(m.plannedDate)}</Typography>
               <Typography variant="caption" color="text.secondary">Weight: {m.weight}%</Typography>
@@ -271,10 +416,104 @@ export default function WorkStructureTab({ projectId, progress, onWeightsChanged
               ) : (
                 <ProjectProgressBar value={m.progressContribution} width="100%" />
               )}
+              {canManageProcurementPlan && (
+                <Button size="small" onClick={() => openEditMilestone(m)}>Edit Plan</Button>
+              )}
             </Box>
           ))}
         </Stack>
       </Paper>
+
+      <Dialog open={procurementPlanDialogOpen} onClose={() => setProcurementPlanDialogOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{editingMilestoneId ? 'Edit Procurement Milestone (Plan)' : 'Add Procurement Milestone'}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {procurementPlanError && <Alert severity="error">{procurementPlanError}</Alert>}
+            <TextField label="Milestone Name" value={procurementPlanForm.name} onChange={(e) => setProcurementPlanForm((f) => ({ ...f, name: e.target.value }))} fullWidth />
+            <TextField label="Weight" type="number" value={procurementPlanForm.weight} onChange={(e) => setProcurementPlanForm((f) => ({ ...f, weight: e.target.value }))} slotProps={{ input: { endAdornment: '%' } }} fullWidth />
+            <TextField
+              label="Planned Date" type="date" value={procurementPlanForm.plannedDate ?? ''}
+              onChange={(e) => setProcurementPlanForm((f) => ({ ...f, plannedDate: e.target.value }))}
+              slotProps={{ inputLabel: { shrink: true } }} fullWidth
+            />
+            {editingMilestoneId && (
+              <Typography variant="caption" color="text.secondary">
+                Editing PLAN only -- Progress Contribution, Status, and Actual Date are
+                untouched by this form (C-01C, business rule 2.1).
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProcurementPlanDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveProcurementPlan}>{editingMilestoneId ? 'Save Changes' : 'Add Milestone'}</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Paper sx={{ p: 2.5 }}>
+        <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+          <Box>
+            <Typography variant="subtitle1" fontWeight={700}>Commissioning Checklist</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Item and Weight are PROJECT_MANAGER-owned PLAN fields (C-01C); marking an item
+              Complete/Pending is ENGINEERING/SITE_MANAGER-owned ACTUAL. Completion feeds the
+              Commissioning component above -- checklist-based, no quantity or percentage.
+            </Typography>
+          </Box>
+          {canManageCommissioningPlan && (
+            <Button size="small" startIcon={<AddRoundedIcon />} onClick={openAddCommissioningItem}>
+              Add Item
+            </Button>
+          )}
+        </Stack>
+        <Stack spacing={1.5}>
+          {commissioningChecklist.length === 0 && (
+            <Typography variant="body2" color="text.secondary">No commissioning checklist items defined yet.</Typography>
+          )}
+          {commissioningChecklist.map((c) => (
+            <Box key={c.id} sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr 1.5fr auto' }, alignItems: 'center' }}>
+              <Typography variant="body2" fontWeight={600}>{c.item}</Typography>
+              <Typography variant="caption" color="text.secondary">Weight: {c.weight}%</Typography>
+              {canManageCommissioningActual ? (
+                <Button
+                  size="small" variant={c.completionStatus === 'Complete' ? 'contained' : 'outlined'}
+                  color={c.completionStatus === 'Complete' ? 'success' : 'inherit'}
+                  onClick={() => handleToggleCommissioningStatus(c.id, c.completionStatus)}
+                >
+                  {c.completionStatus}
+                </Button>
+              ) : (
+                <Typography variant="caption" color="text.secondary">{c.completionStatus}</Typography>
+              )}
+              {canManageCommissioningPlan && (
+                <Button size="small" onClick={() => openEditCommissioningItem(c)}>Edit Plan</Button>
+              )}
+            </Box>
+          ))}
+        </Stack>
+        {commissioningActualError && <Alert severity="error" sx={{ mt: 2 }}>{commissioningActualError}</Alert>}
+      </Paper>
+
+      <Dialog open={commissioningPlanDialogOpen} onClose={() => setCommissioningPlanDialogOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{editingCommissioningItemId ? 'Edit Commissioning Item (Plan)' : 'Add Commissioning Item'}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {commissioningPlanError && <Alert severity="error">{commissioningPlanError}</Alert>}
+            <TextField label="Checklist Item" value={commissioningPlanForm.item} onChange={(e) => setCommissioningPlanForm((f) => ({ ...f, item: e.target.value }))} fullWidth />
+            <TextField label="Weight" type="number" value={commissioningPlanForm.weight} onChange={(e) => setCommissioningPlanForm((f) => ({ ...f, weight: e.target.value }))} slotProps={{ input: { endAdornment: '%' } }} fullWidth />
+            {editingCommissioningItemId && (
+              <Typography variant="caption" color="text.secondary">
+                Editing PLAN only -- Completion Status is untouched by this form (C-01C,
+                business rule 2.3).
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCommissioningPlanDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveCommissioningPlan}>{editingCommissioningItemId ? 'Save Changes' : 'Add Item'}</Button>
+        </DialogActions>
+      </Dialog>
 
       <Paper sx={{ p: 2.5 }}>
         <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>

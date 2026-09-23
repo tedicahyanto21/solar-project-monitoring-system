@@ -167,7 +167,24 @@ service cloud.firestore {
 
       match /procurementMilestones/{milestoneId} {
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
-        allow write: if hasRole(['SUPER_ADMIN', 'SCM']) && isAssignedToProject(projectId) || isSuperAdmin();
+        // C-01C, business rule 2.1/2.2: PLAN (PROJECT_MANAGER: name/
+        // weight/plannedDate) and ACTUAL (SCM: progressContribution/
+        // actualDate/status) as two separate clauses, mirroring
+        // constructionActivities. Create-time safety (mirroring MP#3 R1's
+        // constructionActivities pattern): a PM-created milestone must
+        // start at the exact same safe ACTUAL defaults
+        // createProcurementMilestone always applies -- a PM cannot create
+        // a milestone that is already partially/fully progressed.
+        allow create: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.progressContribution == 0
+              && request.resource.data.status == 'Not Started'
+              && request.resource.data.actualDate == null);
+        allow update: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'weight', 'plannedDate']))
+          || (hasRole(['SCM']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['progressContribution', 'actualDate', 'status']));
       }
 
       match /constructionActivities/{activityId} {
@@ -221,7 +238,21 @@ service cloud.firestore {
 
       match /commissioningItems/{itemId} {
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
-        allow write: if hasRole(['SUPER_ADMIN', 'ENGINEERING', 'SITE_MANAGER']) && isAssignedToProject(projectId) || isSuperAdmin();
+        // C-01C, business rule 2.3/2.4: PLAN (PROJECT_MANAGER: item/
+        // weight) and ACTUAL (ENGINEERING/SITE_MANAGER: completionStatus
+        // only, restricted to the two allowed values) as two separate
+        // clauses. Create-time safety mirrors procurementMilestones/
+        // constructionActivities above: a PM-created item must start
+        // Pending, matching createCommissioningItem's default exactly.
+        allow create: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.completionStatus == 'Pending');
+        allow update: if isSuperAdmin()
+          || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['item', 'weight']))
+          || (hasRole(['ENGINEERING', 'SITE_MANAGER']) && isAssignedToProject(projectId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['completionStatus'])
+              && request.resource.data.completionStatus in ['Complete', 'Pending']);
       }
 
       match /issues/{issueId} {
