@@ -65,8 +65,17 @@ export const NAV_ITEMS = [
 // Returns the nav items a given role is allowed to see. `role` may be
 // undefined while auth is still initializing; in that case show nothing
 // extra beyond items with no role restriction.
+//
+// C-01C R1.1: label-only correction. SCM uses this as a portfolio/
+// Procurement navigation surface, not Project Master administration (SCM
+// never sees Add/Edit/Delete Project -- see ProjectsPage.jsx's
+// CAN_MANAGE_PROJECT_ROLES, unchanged). This renames only the displayed
+// label for SCM; the item's path, roles, and every other behavior are
+// untouched, and no other role's label changes.
 export function getNavItemsForRole(role) {
-  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role));
+  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role)).map((item) =>
+    (item.path === '/projects' && role === ROLES.SCM) ? { ...item, label: 'Projects' } : item
+  );
 }
 
 // Centralized route -> allowed-roles lookup (FT-4.1 Correction 1). Reuses
