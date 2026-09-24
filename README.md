@@ -118,6 +118,26 @@ path in isolation -- neither approach ever touches a real Firebase project.
 `npm test` is safe to run repeatedly on any machine, with or without a
 configured `.env`, and never modifies real Firestore data.
 
+## SCM global Procurement access
+
+**C-01C R1 (Firebase UAT correction):** SCM is a global functional role for
+Procurement, not a project-scoped one -- confirmed by real Firebase UAT
+(SCM had no `projectAssignments` entry anywhere, so C-01A's project-scoped
+filtering correctly showed them nothing, but the business need is for SCM
+to see and act on Procurement across the whole portfolio).
+
+SCM was added to `projectRepository.PORTFOLIO_WIDE_ROLES` (alongside
+SUPER_ADMIN/HEAD_PM/BOD, though for a different reason -- see the code
+comment) so `getProjects`/`getProjectById` treat SCM as portfolio-wide,
+and to the `projects/{projectId}` and `procurementMilestones` Firestore
+read rules. Only the `procurementMilestones` ACTUAL-update clause for SCM
+specifically drops `isAssignedToProject` -- every other rule (PM's PLAN
+clause, Construction, Commissioning, Cost Control, assignment) is
+untouched, and SCM gained no Project Master or team-assignment
+capability (`CAN_MANAGE_PROJECT_ROLES` and `ASSIGNABLE_BY` still exclude
+SCM). The global exception is domain-specific to Procurement, not a
+blanket assignment bypass.
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed

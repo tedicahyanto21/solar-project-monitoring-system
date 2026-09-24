@@ -25,7 +25,19 @@ import {
 // the access model established across FT-1..MP#5 (Dashboard/BOD read
 // everything; HEAD_PM oversees the whole portfolio). Every OTHER role only
 // sees projects they are actually assigned to.
-const PORTFOLIO_WIDE_ROLES = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.BOD];
+// C-01C R1: SCM joins this list for a DIFFERENT reason than the other
+// three roles -- SUPER_ADMIN/HEAD_PM/BOD have genuine oversight authority
+// over the whole portfolio; SCM has none of that. SCM is here ONLY
+// because Procurement is a global functional role that legitimately needs
+// to open any project's Work Structure without a projectAssignments entry
+// (confirmed Firebase UAT finding, C-01C R1). This grants SCM nothing
+// beyond READ access to the project list/detail -- it does not touch
+// Project Master write authorization (ProjectsPage.jsx's
+// CAN_MANAGE_PROJECT_ROLES, unchanged) or team/PM assignment
+// (TeamTab.jsx's ASSIGNABLE_BY, unchanged), and Procurement's own
+// ACTUAL-write authorization is granted separately in firestore.rules,
+// not by this list.
+const PORTFOLIO_WIDE_ROLES = [ROLES.SUPER_ADMIN, ROLES.HEAD_PM, ROLES.BOD, ROLES.SCM];
 
 function isAssignedInLocalMode(projectId, userId) {
   return getOperations(projectId)?.assignments?.some((a) => a.userId === userId) ?? false;

@@ -105,8 +105,14 @@ service cloud.firestore {
     // ---- projects and subcollections ---------------------------------------
     match /projects/{projectId} {
       // Portfolio-wide read (Dashboard, BOD) vs. assigned-project read for
-      // operational roles -- SPMS-DOC-07 Section 6.
-      allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
+      // operational roles -- SPMS-DOC-07 Section 6. C-01C R1: SCM added
+      // for the SAME reason as procurementMilestones below -- SCM is a
+      // global functional role for Procurement and needs to open any
+      // project's detail page without a projectAssignments entry. This is
+      // READ only; SCM gains no write access to this document (see the
+      // unchanged `allow update`/`allow create` below, neither of which
+      // lists SCM).
+      allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD', 'SCM']) || isAssignedToProject(projectId);
       allow create: if hasRole(['SUPER_ADMIN', 'HEAD_PM'])
         // Sprint FT-9A Section 9: duplicate protection enforced at the
         // rules layer too, not just in projectService.js -- a client
@@ -166,7 +172,10 @@ service cloud.firestore {
       }
 
       match /procurementMilestones/{milestoneId} {
-        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD']) || isAssignedToProject(projectId);
+        // C-01C R1: SCM added to portfolio-wide read (same rationale as
+        // projects/{projectId} above) -- Procurement is a global function,
+        // not a per-project assignment.
+        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'BOD', 'SCM']) || isAssignedToProject(projectId);
         // C-01C, business rule 2.1/2.2: PLAN (PROJECT_MANAGER: name/
         // weight/plannedDate) and ACTUAL (SCM: progressContribution/
         // actualDate/status) as two separate clauses, mirroring
@@ -180,10 +189,15 @@ service cloud.firestore {
               && request.resource.data.progressContribution == 0
               && request.resource.data.status == 'Not Started'
               && request.resource.data.actualDate == null);
+        // C-01C R1: PROJECT_MANAGER's PLAN clause remains project-scoped
+        // (isAssignedToProject unchanged) -- only SCM's own ACTUAL clause
+        // drops the assignment requirement, confirming the global-access
+        // exception stays domain-specific (Procurement ACTUAL only) rather
+        // than a blanket "SCM is exempt from assignment everywhere" rule.
         allow update: if isSuperAdmin()
           || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'weight', 'plannedDate']))
-          || (hasRole(['SCM']) && isAssignedToProject(projectId)
+          || (hasRole(['SCM'])
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['progressContribution', 'actualDate', 'status']));
       }
 

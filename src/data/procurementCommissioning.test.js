@@ -169,3 +169,38 @@ describe('C-01C, Regression: Progress Engine formulas remain byte-for-byte uncha
     ])).toBe(50);
   });
 });
+
+// C-01C R1: SCM Global Procurement Access. The repository-layer functions
+// exercised throughout this file (updateProcurementMilestone/Plan) never
+// took a role parameter to begin with -- the PLAN/ACTUAL field split IS
+// the enforcement, and it is unaffected by whether SCM's access is
+// project-scoped or global. What genuinely changed for this corrective is
+// the Firestore RULE text (dropping isAssignedToProject from SCM's ACTUAL
+// clause specifically) and getProjects/getProjectById's portfolio-wide
+// treatment of SCM (covered in projectAccessControl.test.js, Tests 1/7).
+// This test guards the rule text itself, mirroring the file's existing
+// "Firestore rule / application code agreement" documentation pattern, so
+// a future edit cannot silently re-add the assignment requirement to
+// SCM's clause without a test failing.
+describe('C-01C R1, Test 5/6/8/9: Firestore rule text confirms SCM\'s Procurement ACTUAL clause is portfolio-wide (no isAssignedToProject), while PM\'s PLAN clause remains project-scoped', () => {
+  it('the procurementMilestones update rule\'s SCM clause has no isAssignedToProject call; the PROJECT_MANAGER clause still does', async () => {
+    const fs = await import('node:fs');
+    const rulesText = fs.readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8');
+    const block = rulesText.slice(rulesText.indexOf('match /procurementMilestones/{milestoneId}'), rulesText.indexOf('match /constructionActivities'));
+    // The PM clause: role check followed by isAssignedToProject before its hasOnly.
+    expect(block).toMatch(/PROJECT_MANAGER'\]\) && isAssignedToProject\(projectId\)[\s\S]*?hasOnly\(\['name', 'weight', 'plannedDate'\]/);
+    // The SCM clause: role check going STRAIGHT to hasOnly, with no isAssignedToProject in between.
+    expect(block).toMatch(/hasRole\(\['SCM'\]\)\s*\n\s*&& request\.resource\.data\.diff\(resource\.data\)\.affectedKeys\(\)\.hasOnly\(\['progressContribution', 'actualDate', 'status'\]/);
+    // Negative check: SCM's clause text must not contain isAssignedToProject at all.
+    const scmClauseMatch = block.match(/hasRole\(\['SCM'\]\)[\s\S]*?status'\]\)\)/);
+    expect(scmClauseMatch).toBeTruthy();
+    expect(scmClauseMatch[0]).not.toMatch(/isAssignedToProject/);
+  });
+
+  it('the projects/{projectId} read rule includes SCM alongside the other portfolio-wide roles', async () => {
+    const fs = await import('node:fs');
+    const rulesText = fs.readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8');
+    const block = rulesText.slice(rulesText.indexOf('match /projects/{projectId}'), rulesText.indexOf('match /projects/{projectId}') + 800);
+    expect(block).toMatch(/allow read: if hasRole\(\['SUPER_ADMIN', 'HEAD_PM', 'BOD', 'SCM'\]\)/);
+  });
+});

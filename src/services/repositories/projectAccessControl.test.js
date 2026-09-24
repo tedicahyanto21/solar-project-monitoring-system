@@ -187,3 +187,51 @@ describe('C-01A Section 10, Regression (Tests 13-17)', () => {
     expect(typeof result.overallProgress).toBe('number');
   });
 });
+
+// C-01C R1: SCM Global Procurement Access. SCM is a global functional role
+// for Procurement -- unlike PROJECT_MANAGER/SITE_MANAGER/ENGINEERING
+// (project-scoped, tested above), SCM sees every project without needing
+// a projectAssignments entry. This is domain-specific (project
+// list/detail READ + Procurement ACTUAL write), never a blanket "SCM
+// bypasses assignment everywhere" rule -- Project Master administration
+// and PM/team assignment remain completely closed to SCM (verified at the
+// UI-gate level: CAN_MANAGE_PROJECT_ROLES / ASSIGNABLE_BY, neither of
+// which lists SCM, unchanged by this corrective).
+describe('C-01C R1, SCM global Procurement access (Tests 1, 7)', () => {
+  it('Test 1: SCM can retrieve ALL projects, with no assignment to any of them', async () => {
+    const allProjects = await getProjects();
+    const asScm = await getProjects({ userId: 'scm-user-with-no-assignments-anywhere', role: ROLES.SCM });
+    expect(asScm.length).toBe(allProjects.length);
+    expect(asScm.map((p) => p.id).sort()).toEqual(allProjects.map((p) => p.id).sort());
+  });
+
+  it('Test 7: SCM does not require project assignment to open a specific, otherwise-unassigned project\'s detail page', async () => {
+    const unassignedProjectId = initialProjects[9].id; // a project this SCM user holds no assignment for
+    const project = await getProjectById(unassignedProjectId, { userId: 'scm-user-with-no-assignments-anywhere', role: ROLES.SCM });
+    expect(project).not.toBeNull();
+    expect(project.id).toBe(unassignedProjectId);
+  });
+});
+
+describe('C-01C R1, Tests 2-4: PROJECT_MANAGER/SITE_MANAGER/ENGINEERING remain project-scoped -- SCM\'s global exception does not leak to other roles', () => {
+  it('Test 2: PROJECT_MANAGER with no assignment sees an EMPTY project list, unlike SCM', async () => {
+    const asUnassignedPm = await getProjects({ userId: 'pm-user-with-no-assignments-anywhere', role: ROLES.PROJECT_MANAGER });
+    expect(asUnassignedPm).toEqual([]);
+  });
+
+  it('Test 3: SITE_MANAGER with no assignment sees an EMPTY project list', async () => {
+    const asUnassignedSm = await getProjects({ userId: 'sm-user-with-no-assignments-anywhere', role: ROLES.SITE_MANAGER });
+    expect(asUnassignedSm).toEqual([]);
+  });
+
+  it('Test 4: ENGINEERING with no assignment sees an EMPTY project list', async () => {
+    const asUnassignedEng = await getProjects({ userId: 'eng-user-with-no-assignments-anywhere', role: ROLES.ENGINEERING });
+    expect(asUnassignedEng).toEqual([]);
+  });
+
+  it('an unassigned PROJECT_MANAGER is also rejected from a specific project\'s detail page, unlike SCM', async () => {
+    const unassignedProjectId = initialProjects[9].id;
+    const project = await getProjectById(unassignedProjectId, { userId: 'pm-user-with-no-assignments-anywhere', role: ROLES.PROJECT_MANAGER });
+    expect(project).toBeNull();
+  });
+});

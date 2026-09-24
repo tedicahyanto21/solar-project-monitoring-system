@@ -30,6 +30,15 @@ export const NAV_ITEMS = [
       ROLES.SITE_MANAGER,
       ROLES.ENGINEERING,
       ROLES.HSE,
+      // C-01C R1: SCM is a global functional role for Procurement --
+      // portfolio-wide visibility into every project's Work Structure to
+      // read/update Procurement ACTUAL, without requiring a
+      // projectAssignments entry (see projectRepository.PORTFOLIO_WIDE_ROLES
+      // and the procurementMilestones Firestore rule). This is READ/
+      // Procurement-scoped, not Project Master administration -- SCM does
+      // not appear in CAN_MANAGE_PROJECT_ROLES (ProjectsPage.jsx) and so
+      // never sees Add/Edit/Delete Project controls.
+      ROLES.SCM,
     ],
   },
   {
