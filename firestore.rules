@@ -284,7 +284,13 @@ service cloud.firestore {
         // only comes through isAssignedToProject, same as every other
         // subcollection's PM read scope. Legitimate access (their own
         // assigned projects) is unaffected.
-        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE']) || isAssignedToProject(projectId);
+        // C-01D.1 R1: SCM added -- SCM is a global functional role for
+        // Procurement/Payment Projection (C-01C, locked), so it must be
+        // able to view eligible Cost Transactions across every project to
+        // build a payment batch, not only projects it happens to be
+        // assigned to. This is READ only; SCM's write access remains the
+        // narrow, field-restricted allocation clause below.
+        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE', 'SCM']) || isAssignedToProject(projectId);
         // FT-5 B2/B9: SCM/HC/FINANCE create; sourceRole must equal the
         // caller's own role (no impersonation); POSTED transactions are
         // never deleted, only voided (handled as an update, not delete).
@@ -333,34 +339,69 @@ service cloud.firestore {
           // fails the entire concurrent attempt, including its new
           // Payment Projection document. No runTransaction() or
           // getAfter() scan is needed for this specific invariant.
-          || (hasRole(['SCM']) && isAssignedToProject(projectId)
+          // C-01D.1 R1: isAssignedToProject dropped for this clause only --
+          // SCM's allocation capability is the same global Procurement
+          // function as its read access above (C-01C, locked), not tied
+          // to project assignment. Still narrowly scoped: only
+          // projectionId may change, only from null, and only to a
+          // non-empty string (never an object, number, or other forged
+          // value) -- SCM gains no broader Cost Transaction write access
+          // than this single field, on any project.
+          || (hasRole(['SCM'])
               && resource.data.projectionId == null
+              && request.resource.data.projectionId is string && request.resource.data.projectionId.size() > 0
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['projectionId']));
         allow delete: if false; // normal workflow is VOID (an update), never delete
       }
 
       match /paymentProjections/{projectionId} {
         // MP#5 Finding: same over-broad PROJECT_MANAGER read scope as
-        // costTransactions above -- fixed identically.
-        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE']) || isAssignedToProject(projectId);
-        // C-01D.1 Payment Projection Batch (replaces the prior FT-5 B2/B5
-        // blanket SCM write rule): SCM creates a new batch, always
-        // starting PENDING. Validating that costTransactionIds/
-        // totalAmount are internally consistent with the N referenced
-        // Cost Transactions is deliberately NOT attempted here -- it
-        // would need up to N get() calls in a single rule evaluation,
-        // which does not scale safely for an unbounded batch size
-        // (Firestore's documented per-evaluation document-access-call
-        // limit). This is a documented, deliberate limitation: that
-        // invariant is enforced at the repository/service layer only
-        // (createPaymentProjection in both mockOperationalData.js and
-        // costService.js), not silently weakened here. See Known
-        // Limitations in the final report.
+        // costTransactions above -- fixed identically. C-01D.1 R1: SCM
+        // added for the same global-Procurement reason as costTransactions
+        // read above.
+        allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE', 'SCM']) || isAssignedToProject(projectId);
+        // C-01D.1 R1: isAssignedToProject dropped for SCM (global
+        // functional role, C-01C locked). Hardened from the prior
+        // revision with field-level and sanity restrictions that do NOT
+        // require reading other documents:
+        //   - hasOnly(): the client cannot write any field outside this
+        //     exact canonical set, closing the "arbitrary extra field"
+        //     gap.
+        //   - costTransactionIds must be a non-empty list of strings
+        //     (not, for instance, a single forged string or an object).
+        //   - totalAmount must be a positive number.
+        // IMPORTANT, HONEST LIMITATION (see the C-01D.1 R1 final report,
+        // "Blocker 2" / Known Limitations, for the full explanation):
+        // this does NOT verify that totalAmount is the genuine SUM of the
+        // referenced Cost Transactions' real amounts, nor that every ID in
+        // costTransactionIds corresponds to a transaction actually
+        // allocated (projectionId set) in the same write. Doing so
+        // reliably for an arbitrary-size batch would require up to N
+        // get() calls in a single rule evaluation, which risks exceeding
+        // Firestore's documented per-request document-access-call limit
+        // once a batch grows large enough -- an invariant this revision
+        // explicitly declined to implement rather than risk shipping
+        // unverified, untested rules logic for a security-critical check.
+        // Through the NORMAL application path (UI -> repository ->
+        // atomic writeBatch in costService.js / mockOperationalData.js),
+        // this is impossible to forge, because the application -- not the
+        // client's arbitrary input -- computes totalAmount and issues the
+        // matching costTransactions updates in the same atomic batch. The
+        // gap is specifically a malicious client bypassing the
+        // application and writing directly to Firestore.
         allow create: if isSuperAdmin()
-          || (hasRole(['SCM']) && isAssignedToProject(projectId) && request.resource.data.status == 'PENDING');
+          || (hasRole(['SCM'])
+              && request.resource.data.status == 'PENDING'
+              && request.resource.data.costTransactionIds is list
+              && request.resource.data.costTransactionIds.size() > 0
+              && request.resource.data.totalAmount is number
+              && request.resource.data.totalAmount > 0
+              && request.resource.data.keys().hasOnly(['projectId', 'projectionId', 'status', 'costTransactionIds', 'totalAmount', 'currency', 'createdAt', 'createdBy', 'paidDate', 'paymentReference', 'paidBy']));
         // Finance may ONLY transition PENDING -> PAID, and may ONLY touch
         // the settlement fields -- never costTransactionIds, totalAmount,
-        // or any other PLAN field SCM set at creation.
+        // or any other PLAN field SCM set at creation. Finance remains
+        // project-assignment scoped (C-01D.1 locked business rule,
+        // unchanged by this revision -- only SCM's access became global).
         allow update: if isSuperAdmin()
           || (hasRole(['FINANCE']) && isAssignedToProject(projectId)
               && resource.data.status == 'PENDING' && request.resource.data.status == 'PAID'
