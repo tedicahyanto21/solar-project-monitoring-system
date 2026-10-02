@@ -297,9 +297,45 @@ service cloud.firestore {
         allow create: if hasRole(['SUPER_ADMIN', 'SCM', 'HC', 'FINANCE'])
           && isAssignedToProject(projectId)
           && (isSuperAdmin() || request.resource.data.sourceRole == myRole())
-          && (request.resource.data.transactionType != 'PAYMENT_ONLY' || hasRole(['SUPER_ADMIN', 'FINANCE']));
+          && (request.resource.data.transactionType != 'PAYMENT_ONLY' || hasRole(['SUPER_ADMIN', 'FINANCE']))
+          // C-01D.1 Payment Projection Batch: a PAYMENT_ONLY transaction
+          // carrying a projectionId is the system-generated settlement
+          // record markPaymentProjectionPaid creates when Finance marks a
+          // projection PAID. Even though Finance's own UI never calls this
+          // function directly for that flow, this closes the gap for a
+          // technically-capable Finance user calling it directly: the
+          // referenced projection must still be PENDING (not already
+          // settled), and the amount must exactly equal that projection's
+          // derived totalAmount -- no arbitrary amount is possible. This
+          // needs exactly ONE get() per creation (not one per allocated
+          // Cost Transaction), well within Firestore's per-evaluation
+          // document-access limits regardless of batch size.
+          && (request.resource.data.transactionType != 'PAYMENT_ONLY' || !('projectionId' in request.resource.data) || request.resource.data.projectionId == null
+              || (
+                get(/databases/$(database)/documents/projects/$(projectId)/paymentProjections/$(request.resource.data.projectionId)).data.status == 'PENDING'
+                && request.resource.data.amount == get(/databases/$(database)/documents/projects/$(projectId)/paymentProjections/$(request.resource.data.projectionId)).data.totalAmount
+              ));
         allow update: if hasRole(['SUPER_ADMIN'])
-          || (hasRole(['SCM', 'HC', 'FINANCE']) && resource.data.sourceRole == myRole() && isAssignedToProject(projectId));
+          || (hasRole(['SCM', 'HC', 'FINANCE']) && resource.data.sourceRole == myRole() && isAssignedToProject(projectId))
+          // C-01D.1 Payment Projection Batch: SCM may allocate ANY
+          // eligible Cost Transaction (regardless of its original
+          // sourceRole -- a batch can mix SCM- and HC-sourced costs) by
+          // setting projectionId from null -- never reassigning an
+          // already-allocated transaction, and never touching any other
+          // field. This is a PER-DOCUMENT check (resource.data's own
+          // prior value), which is what makes it safe inside a
+          // multi-document writeBatch with no cross-document query: when
+          // two concurrent batches target the same Cost Transaction,
+          // Firestore evaluates each write against that document's actual
+          // server-side state at commit time, so whichever batch commits
+          // second sees projectionId already non-null and is rejected --
+          // and because a writeBatch is all-or-nothing, that rejection
+          // fails the entire concurrent attempt, including its new
+          // Payment Projection document. No runTransaction() or
+          // getAfter() scan is needed for this specific invariant.
+          || (hasRole(['SCM']) && isAssignedToProject(projectId)
+              && resource.data.projectionId == null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['projectionId']));
         allow delete: if false; // normal workflow is VOID (an update), never delete
       }
 
@@ -307,8 +343,29 @@ service cloud.firestore {
         // MP#5 Finding: same over-broad PROJECT_MANAGER read scope as
         // costTransactions above -- fixed identically.
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM', 'FINANCE']) || isAssignedToProject(projectId);
-        // FT-5 B2/B5: SCM and Super Admin only.
-        allow write: if hasRole(['SUPER_ADMIN', 'SCM']) && isAssignedToProject(projectId) || isSuperAdmin();
+        // C-01D.1 Payment Projection Batch (replaces the prior FT-5 B2/B5
+        // blanket SCM write rule): SCM creates a new batch, always
+        // starting PENDING. Validating that costTransactionIds/
+        // totalAmount are internally consistent with the N referenced
+        // Cost Transactions is deliberately NOT attempted here -- it
+        // would need up to N get() calls in a single rule evaluation,
+        // which does not scale safely for an unbounded batch size
+        // (Firestore's documented per-evaluation document-access-call
+        // limit). This is a documented, deliberate limitation: that
+        // invariant is enforced at the repository/service layer only
+        // (createPaymentProjection in both mockOperationalData.js and
+        // costService.js), not silently weakened here. See Known
+        // Limitations in the final report.
+        allow create: if isSuperAdmin()
+          || (hasRole(['SCM']) && isAssignedToProject(projectId) && request.resource.data.status == 'PENDING');
+        // Finance may ONLY transition PENDING -> PAID, and may ONLY touch
+        // the settlement fields -- never costTransactionIds, totalAmount,
+        // or any other PLAN field SCM set at creation.
+        allow update: if isSuperAdmin()
+          || (hasRole(['FINANCE']) && isAssignedToProject(projectId)
+              && resource.data.status == 'PENDING' && request.resource.data.status == 'PAID'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paidDate', 'paymentReference', 'paidBy']));
+        allow delete: if false;
       }
     }
   }

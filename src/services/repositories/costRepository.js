@@ -10,6 +10,7 @@ import {
   setPlannedCost as storeSetPlannedCost,
   getPaymentProjections as storeGetPaymentProjections,
   createPaymentProjection as storeCreatePaymentProjection,
+  markPaymentProjectionPaid as storeMarkPaymentProjectionPaid,
   getCostTransactions as storeGetCostTransactions,
   checkDuplicateTransaction as storeCheckDuplicate,
   createCostTransaction as storeCreateCostTransaction,
@@ -66,8 +67,19 @@ export async function getPaymentProjections(projectId) {
 
 // B5: Payment Projection is never counted as Actual Cost -- it has its own
 // store/collection and is never read by calculateActualCost above.
+//
+// C-01D.1 Payment Projection Batch: SCM-owned. `projection` is
+// {costTransactionIds, createdBy} -- a batch of existing, eligible Cost
+// Transactions, never a manually entered amount.
 export async function createPaymentProjection(projectId, projection) {
   return isLocalMode ? storeCreatePaymentProjection(projectId, projection) : fb.createPaymentProjection(projectId, projection);
+}
+
+// C-01D.1: Finance-owned. The only write path from PENDING to PAID; see
+// mockOperationalData.markPaymentProjectionPaid / costService.js for the
+// full rationale (including the auto-generated settlement transaction).
+export async function markPaymentProjectionPaid(projectId, projectionId, settlement) {
+  return isLocalMode ? storeMarkPaymentProjectionPaid(projectId, projectionId, settlement) : fb.markPaymentProjectionPaid(projectId, projectionId, settlement);
 }
 
 // B8: layered duplicate check (services/duplicateDetection.js, shared by

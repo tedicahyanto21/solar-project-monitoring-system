@@ -138,6 +138,48 @@ capability (`CAN_MANAGE_PROJECT_ROLES` and `ASSIGNABLE_BY` still exclude
 SCM). The global exception is domain-specific to Procurement, not a
 blanket assignment bypass.
 
+## Payment Projection: a payment batch, not a single payment
+
+**C-01D.1 (locked business model):** a Payment Projection is a **payment
+batch** -- SCM/Procurement creates one by selecting one or more existing,
+POSTED Cost Transactions (`costTransactionIds`). The batch's `totalAmount`
+is always **derived** (`SUM` of the selected transactions' own amounts)
+and is never a manually entered or editable figure; Cost Transactions
+remain the single source of truth for amount. Full payment only -- there
+is no partial-amount, remaining-balance, or split-allocation field
+anywhere in this flow.
+
+A Cost Transaction may belong to **at most one active Payment Projection**
+at a time: selecting it sets its own `projectionId` field (from `null`),
+after which it no longer appears as eligible for a second batch, whether
+the first batch is still `PENDING` or already `PAID`. In Firebase mode
+this is enforced per-document by `firestore.rules` (`resource.data
+.projectionId == null`), which Firestore evaluates against each
+transaction's actual server-side state at commit time -- not a
+cross-document query, so it scales safely to any batch size and correctly
+rejects a concurrent attempt to claim the same transaction twice.
+
+Finance's only write path is `PENDING -> PAID`
+(`markPaymentProjectionPaid`), which also records the settlement fields
+(`paidDate`/`paymentReference`/`paidBy`) the schema already anticipated.
+Finance never selects, adds, or removes transactions, and never touches
+`totalAmount`. Marking a batch `PAID` automatically generates exactly one
+`transactionType: PAYMENT_ONLY` Cost Transaction as an audit/settlement
+record, referencing the batch via the same `projectionId` field -- this is
+system-generated, never something Finance creates directly, and (like
+every `PAYMENT_ONLY` transaction) it is excluded from Actual Cost to avoid
+double-counting.
+
+**Known limitation:** Firestore Rules validate that a referenced Payment
+Projection exists and (for the settlement record) that its amount and
+`PENDING` status match, but do **not** attempt to independently verify
+that a batch's `totalAmount`/`costTransactionIds` are internally
+consistent with the referenced transactions -- doing so would require up
+to N `get()` calls in a single rule evaluation, which does not scale
+safely for an unbounded batch size. That specific invariant is enforced at
+the repository/service layer only (`createPaymentProjection` in both
+`mockOperationalData.js` and `costService.js`).
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed
