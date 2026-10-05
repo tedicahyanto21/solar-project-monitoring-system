@@ -138,47 +138,82 @@ capability (`CAN_MANAGE_PROJECT_ROLES` and `ASSIGNABLE_BY` still exclude
 SCM). The global exception is domain-specific to Procurement, not a
 blanket assignment bypass.
 
-## Payment Projection: a payment batch, not a single payment
+## Payment Projection: a payment batch, allocated through Cost Transactions
 
-**C-01D.1 (locked business model):** a Payment Projection is a **payment
-batch** -- SCM/Procurement creates one by selecting one or more existing,
-POSTED Cost Transactions (`costTransactionIds`). The batch's `totalAmount`
-is always **derived** (`SUM` of the selected transactions' own amounts)
-and is never a manually entered or editable figure; Cost Transactions
-remain the single source of truth for amount. Full payment only -- there
-is no partial-amount, remaining-balance, or split-allocation field
-anywhere in this flow.
+**C-01D.1 R2 (authoritative allocation).** A Payment Projection is ONE
+payment batch and holds **metadata and settlement information only**
+(`projectionId, projectId, status, currency, createdAt, createdBy, paidDate,
+paymentReference, paidBy`). It does **not** store which Cost Transactions it
+contains or what they add up to.
 
-A Cost Transaction may belong to **at most one active Payment Projection**
-at a time: selecting it sets its own `projectionId` field (from `null`),
-after which it no longer appears as eligible for a second batch, whether
-the first batch is still `PENDING` or already `PAID`. In Firebase mode
-this is enforced per-document by `firestore.rules` (`resource.data
-.projectionId == null`), which Firestore evaluates against each
-transaction's actual server-side state at commit time -- not a
-cross-document query, so it scales safely to any batch size and correctly
-rejects a concurrent attempt to claim the same transaction twice.
+- **Authoritative relationship:** `CostTransaction.projectionId`. A Cost
+  Transaction belongs to zero or one Payment Projection; absent/null means
+  unallocated (legacy records with no such field are treated as unallocated
+  and are never rewritten).
+- **Derived, never stored:** the batch's contents and total are computed from
+  the allocated Cost Transactions on every read
+  (`services/paymentAllocation.js`: `getAllocatedTransactions`,
+  `calculateProjectionTotal`, re-exported by `costRepository`). Each
+  transaction contributes its full amount; there is no amount field to type,
+  no partial payment, no second source of truth.
+- **Eligibility:** `status == POSTED`, `transactionType != PAYMENT_ONLY`,
+  and unallocated. DRAFT, VOID, PAYMENT_ONLY and already-allocated
+  transactions are rejected.
+- **No batch-size limit.** Any number of eligible transactions may be
+  selected; only Firestore's own operational limits apply (see below).
+- **Creation (SCM, global):** SCM selects transactions; one atomic operation
+  creates the `PENDING` projection and sets `projectionId` on every selected
+  transaction. In Firebase mode this is a single `runTransaction`: each
+  transaction is read, validated and written inside it, so if another user
+  allocates one in between, Firestore retries, the re-read sees it allocated,
+  and the whole request fails with nothing written. In Local Mode every
+  selection is validated before any write.
+- **Frozen once allocated:** `amount`, `status`, `transactionType` and
+  `projectionId` cannot change (no cancellation/reversal workflow exists
+  yet) -- enforced for every role in `firestore.rules`, and the repository
+  rejects voiding an allocated transaction. A new Cost Transaction can never
+  be created already allocated.
+- **Finance (project-assignment scoped):** only `PENDING -> PAID` plus the
+  settlement fields on a project it is assigned to; it cannot create a
+  projection or touch composition or amount (neither is stored on it).
+- **PAYMENT_ONLY:** the concept and all legacy records are preserved and still
+  excluded from Actual Cost. This revision **no longer generates** a
+  PAYMENT_ONLY record when a projection is paid: the total is no longer
+  stored, so a generated record's amount could not be checked against any
+  authoritative value. The projection's settlement fields are the audit
+  trail. (A legacy settlement record that carries a `projectionId` is never
+  counted toward a derived total.)
+- **Legacy Payment Projections** (old `plannedAmount` / `totalAmount` /
+  `costTransactionIds` shapes) are preserved untouched, shown as "Legacy
+  plan", ignored by the derived total, and cannot be marked PAID. Projections
+  created by the earlier batch revision work as-is because their transactions
+  already carry `projectionId`.
 
-Finance's only write path is `PENDING -> PAID`
-(`markPaymentProjectionPaid`), which also records the settlement fields
-(`paidDate`/`paymentReference`/`paidBy`) the schema already anticipated.
-Finance never selects, adds, or removes transactions, and never touches
-`totalAmount`. Marking a batch `PAID` automatically generates exactly one
-`transactionType: PAYMENT_ONLY` Cost Transaction as an audit/settlement
-record, referencing the batch via the same `projectionId` field -- this is
-system-generated, never something Finance creates directly, and (like
-every `PAYMENT_ONLY` transaction) it is excluded from Actual Cost to avoid
-double-counting.
+**Firestore Rules status: UNVERIFIED.** The rules were written and reviewed,
+and their text is asserted by unit tests, but they were **not executed**
+against the Firebase Emulator or a real Firebase project. What the rules do
+and do not enforce:
 
-**Known limitation:** Firestore Rules validate that a referenced Payment
-Projection exists and (for the settlement record) that its amount and
-`PENDING` status match, but do **not** attempt to independently verify
-that a batch's `totalAmount`/`costTransactionIds` are internally
-consistent with the referenced transactions -- doing so would require up
-to N `get()` calls in a single rule evaluation, which does not scale
-safely for an unbounded batch size. That specific invariant is enforced at
-the repository/service layer only (`createPaymentProjection` in both
-`mockOperationalData.js` and `costService.js`).
+- Enforced (per document, no extra document-access calls): allocation only
+  from an empty `projectionId`, only to a POSTED non-PAYMENT_ONLY transaction,
+  only the `projectionId` field, only by SCM; frozen fields once allocated;
+  no `projectionId` at creation; projection documents limited to the metadata
+  shape, created `PENDING`; Finance limited to `PENDING -> PAID`.
+- **Not enforced by rules:** that a projection is non-empty; that no
+  transaction is later allocated to an *existing* projection by a direct
+  Firestore write, or to a projection id that does not exist. Closing these
+  needs cross-document access calls proportional to batch size, which would
+  either impose a size cap or risk the per-request budget (20 document-access
+  calls per batched request/transaction, 1,000 expressions per request). The
+  application never offers these operations; this is the remaining
+  integrity boundary.
+- **Unmeasured:** whether very large selections stay inside Firestore's
+  per-request rules budget. If one does not, Firestore rejects it
+  (fail-closed, nothing written). This must be measured on the Emulator.
+- **Legacy PAYMENT_ONLY creation:** the rules still allow an assigned Finance
+  user to create a PAYMENT_ONLY transaction that references an existing Cost
+  Transaction (`relatedTransactionId`) -- the pre-C-01D settle-a-cost path,
+  left unchanged. The UI no longer offers it to Finance.
 
 ## Procurement & Commissioning operational input
 

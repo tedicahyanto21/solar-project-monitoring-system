@@ -146,7 +146,7 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
                     <Button size="small" onClick={() => handlePost(t.transactionId)}>Post</Button>
                   )}
                   {t.status === 'POSTED' && (profile?.role === 'SUPER_ADMIN' || t.sourceRole === profile?.role) && (
-                    <Button size="small" color="error" onClick={() => setVoidTarget(t.transactionId)}>Void</Button>
+                    <Button size="small" color="error" disabled={!!t.projectionId} title={t.projectionId ? 'Allocated to a Payment Projection -- frozen' : undefined} onClick={() => setVoidTarget(t.transactionId)}>Void</Button>
                   )}
                   {t.status === 'VOID' && (
                     <Typography variant="caption" color="text.secondary">Reason: {t.voidReason}</Typography>

@@ -6,7 +6,8 @@
 import { getAllDocs, getOneDoc, createDoc, updateDocById } from './firestoreHelpers';
 import { COLLECTIONS, PROJECT_SUBCOLLECTIONS } from './firestorePaths';
 import { checkDuplicateTransaction as sharedCheckDuplicate } from '../duplicateDetection';
-import { doc, getDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { assertValidSelection, getIneligibilityReason, isUnallocated } from '../paymentAllocation';
+import { doc, getDoc, updateDoc, runTransaction } from 'firebase/firestore';
 import { db } from './config';
 
 function txPath(projectId) { return `${COLLECTIONS.PROJECTS}/${projectId}/${PROJECT_SUBCOLLECTIONS.COST_TRANSACTIONS}`; }
@@ -24,102 +25,92 @@ export async function setPlannedCost(projectId, { amount, currency, updatedBy })
   return plannedCost;
 }
 
+// Legacy projection documents (created before the stable projectionId field
+// existed) only carry the Firestore document id -- expose it as projectionId
+// so every consumer can rely on one identity field, in both modes. Stored
+// data is never rewritten.
 export async function getPaymentProjections(projectId) {
-  return getAllDocs(ppPath(projectId));
+  const docs = await getAllDocs(ppPath(projectId));
+  return docs.map((d) => ({ ...d, projectionId: d.projectionId ?? d.id }));
 }
 
-// C-01D.1 Payment Projection Batch (replaces the prior one-payment-per-
-// projection concept). See the mock store's identical function for the
-// full business-rule rationale (derived total, full-payment-only,
-// allocation invariant). The concurrency-safety story differs here:
+// C-01D.1 R2 -- Authoritative Cost Transaction allocation (Firebase mode).
+// See the mock store's createPaymentProjection for the business-model
+// rationale. The projection document stores metadata only; the batch
+// composition and total are derived from `CostTransaction.projectionId`.
 //
-// Section 11 (atomicity/concurrency): this performs ONE writeBatch
-// committing the new projection document AND the `projectionId` update on
-// every selected Cost Transaction together, atomically. The client-side
-// pre-validation below (existence, POSTED, not already allocated) gives a
-// clear error message in the common case, but the REAL race protection is
-// the Firestore Rule on costTransactions' update -- requiring
-// resource.data.projectionId == null -- which Firestore evaluates against
-// each document's actual server-side state AT COMMIT TIME, per document,
-// not against this function's stale client-side read. If a concurrent
-// writer already claimed one of the selected transactions between this
-// read and this commit, that document's update fails its rule, and
-// because batch writes are all-or-nothing, the ENTIRE batch (including the
-// new projection) is rejected -- no stale allocation is ever possible,
-// without needing a runTransaction() re-read or any cross-document query
-// in the rule itself (see firestore.rules for why this specific invariant
-// -- "is MY OWN prior value null" -- needs no getAfter() or exists() scan).
+// Atomicity / concurrency: this is one Firestore TRANSACTION. Every
+// selected Cost Transaction is READ inside it, validated, and then the new
+// projection and every allocation are written together. If another writer
+// allocates one of the selected transactions after we read it, Firestore
+// detects the conflict, retries this function, and the re-read now sees the
+// transaction allocated -- so the validation fails and nothing is written.
+// The `costTransactions` update rule independently requires the prior
+// projectionId to be empty (a per-document check), so a client that
+// bypasses this function cannot allocate an already-allocated transaction
+// either. There is no cap on selection size.
+//
+// KNOWN BOUNDARY (not verified here -- no Emulator/Firebase available):
+// Firestore Rules allow at most 20 document-access calls per
+// transaction/batched request, and the rules' role helpers also read the
+// user profile. Whether very large selections stay inside that budget has
+// not been measured; if a request exceeds it Firestore rejects it
+// (fail-closed, nothing is written) rather than accepting it unchecked.
 export async function createPaymentProjection(projectId, { costTransactionIds, createdBy }) {
-  if (!Array.isArray(costTransactionIds) || costTransactionIds.length === 0) {
-    throw new Error('A Payment Projection must include at least one Cost Transaction.');
-  }
-  const uniqueIds = new Set(costTransactionIds);
-  if (uniqueIds.size !== costTransactionIds.length) {
-    throw new Error('The same Cost Transaction cannot be selected more than once in a single Payment Projection.');
-  }
-  const existing = await getCostTransactions(projectId);
-  const selected = costTransactionIds.map((id) => existing.find((t) => t.id === id));
-  const missingIds = costTransactionIds.filter((id, i) => !selected[i]);
-  if (missingIds.length > 0) {
-    throw new Error(`Cost Transaction(s) not found on this project: ${missingIds.join(', ')}.`);
-  }
-  for (const t of selected) {
-    if (t.status !== 'POSTED') {
-      throw new Error(`Cost Transaction "${t.id}" must be POSTED before it can be included in a Payment Projection (current status: ${t.status}).`);
-    }
-    if (t.transactionType === 'PAYMENT_ONLY') {
-      throw new Error(`Cost Transaction "${t.id}" is itself a settlement record (PAYMENT_ONLY) and cannot be included in a Payment Projection.`);
-    }
-    if (t.projectionId) {
-      throw new Error(`Cost Transaction "${t.id}" is already allocated to Payment Projection "${t.projectionId}".`);
-    }
-  }
-  const totalAmount = selected.reduce((sum, t) => sum + Number(t.amount), 0);
+  assertValidSelection(costTransactionIds);
   const projectionId = `${projectId}-pp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const record = {
-    projectId, projectionId, status: 'PENDING', costTransactionIds: [...costTransactionIds], totalAmount, currency: 'IDR',
+    projectId, projectionId, status: 'PENDING', currency: 'IDR',
     createdAt: new Date().toISOString(), createdBy, paidDate: null, paymentReference: null, paidBy: null,
   };
-  const batch = writeBatch(db);
-  batch.set(doc(db, ...ppPath(projectId).split('/'), projectionId), record);
-  for (const id of costTransactionIds) {
-    batch.update(doc(db, ...txPath(projectId).split('/'), id), { projectionId });
+  const txBase = txPath(projectId).split('/');
+  try {
+    await runTransaction(db, async (transaction) => {
+      const refs = costTransactionIds.map((id) => doc(db, ...txBase, id));
+      const snaps = await Promise.all(refs.map((ref) => transaction.get(ref)));
+      snaps.forEach((snap, i) => {
+        if (!snap.exists()) throw new Error(`Cost Transaction(s) not found on this project: ${costTransactionIds[i]}.`);
+        const reason = getIneligibilityReason({ ...snap.data(), transactionId: costTransactionIds[i] });
+        if (reason) throw new Error(reason);
+      });
+      transaction.set(doc(db, ...ppPath(projectId).split('/'), projectionId), record);
+      refs.forEach((ref) => transaction.update(ref, { projectionId }));
+    });
+  } catch (err) {
+    if (err?.code === 'permission-denied') {
+      throw new Error('The Payment Projection could not be created. A selected Cost Transaction may have just been allocated by another user, or you may not have permission. Nothing was changed -- please reload and try again.');
+    }
+    throw err;
   }
-  await batch.commit();
   return record;
 }
 
-// C-01D.1: Finance's ONLY write path for a Payment Projection, mirroring
-// the mock store's function exactly (see its comment for the full
-// rationale, including why Finance never calls createCostTransaction
-// directly). The status transition and the settlement-record creation are
-// batched together atomically: either both happen, or neither does.
+// C-01D.1 R2: Finance's only write path for a Payment Projection (see the
+// mock store's function for why no PAYMENT_ONLY record is generated).
+// Read-check-write inside one transaction, so two Finance users cannot both
+// settle the same projection.
 export async function markPaymentProjectionPaid(projectId, projectionId, { paidDate, paymentReference, paidBy }) {
-  const projection = await getOneDoc(ppPath(projectId), projectionId);
-  if (!projection) return null;
-  if (projection.status !== 'PENDING') {
-    throw new Error(`Only a PENDING Payment Projection can be marked PAID (current status: ${projection.status}).`);
-  }
-  const updatedFields = { status: 'PAID', paidDate: paidDate ?? null, paymentReference: paymentReference ?? null, paidBy: paidBy ?? null };
-  const existing = await getCostTransactions(projectId);
-  const settlementTransactionId = `CST-${new Date().getFullYear()}-${String(existing.length + 1).padStart(6, '0')}`;
-  const settlementRecord = {
-    projectId, status: 'POSTED', currency: 'IDR', transactionType: 'PAYMENT_ONLY', relatedTransactionId: null,
-    projectionId, category: 'Milestone Payment', amount: projection.totalAmount,
-    transactionDate: paidDate ?? new Date().toISOString().slice(0, 10), referenceNumber: paymentReference ?? '',
-    description: `Settlement for Payment Projection ${projectionId} (${projection.costTransactionIds.length} Cost Transaction${projection.costTransactionIds.length === 1 ? '' : 's'}).`,
-    sourceRole: 'FINANCE', createdBy: paidBy, createdAt: new Date().toISOString(), postedBy: paidBy, postedAt: new Date().toISOString(),
-    duplicateCheck: null, override: null,
-  };
-  const batch = writeBatch(db);
-  batch.update(doc(db, ...ppPath(projectId).split('/'), projectionId), updatedFields);
-  batch.set(doc(db, ...txPath(projectId).split('/'), settlementTransactionId), settlementRecord);
-  await batch.commit();
-  return { ...projection, ...updatedFields };
+  const ref = doc(db, ...ppPath(projectId).split('/'), projectionId);
+  const fields = { status: 'PAID', paidDate: paidDate ?? null, paymentReference: paymentReference ?? null, paidBy: paidBy ?? null };
+  return runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists()) return null;
+    const projection = snap.data();
+    if (projection.status !== 'PENDING') {
+      throw new Error(`Only a PENDING Payment Projection can be marked PAID (current status: ${projection.status}).`);
+    }
+    transaction.update(ref, fields);
+    return { ...projection, projectionId: projection.projectionId ?? projectionId, ...fields };
+  });
 }
 
+// Transaction documents only carry the Firestore document id (the stored data
+// has no transactionId field); expose it as transactionId so every consumer
+// -- the UI, the allocation rules -- sees the same identity field in both
+// modes. Stored data is never rewritten.
 export async function getCostTransactions(projectId) {
-  return getAllDocs(txPath(projectId));
+  const docs = await getAllDocs(txPath(projectId));
+  return docs.map((d) => ({ ...d, transactionId: d.id }));
 }
 
 // Same shared logic as the mock backend (services/duplicateDetection.js) --
@@ -145,25 +136,20 @@ export async function createCostTransaction(projectId, transaction, override) {
       throw err;
     }
   }
-  // C-01D.1 Batch: same widened validation as the mock store -- a
-  // PAYMENT_ONLY transaction references EITHER relatedTransactionId
-  // (unchanged HC/SCM use case) OR projectionId (the system-generated
-  // settlement record). Finance never reaches this function directly
-  // through the UI for the new flow (see PaymentProjectionTab.jsx) --
-  // markPaymentProjectionPaid above constructs this record itself.
+  // C-01D.1 R2: same validation as the mock store -- a PAYMENT_ONLY
+  // transaction settles an existing Cost Transaction (relatedTransactionId,
+  // the original rule), and a new Cost Transaction can never be created
+  // already allocated to a Payment Projection (Section 9).
   if (transaction.transactionType === 'PAYMENT_ONLY') {
-    if (!transaction.relatedTransactionId && !transaction.projectionId) {
-      throw new Error('A PAYMENT_ONLY transaction must reference either the existing Cost Transaction it settles (relatedTransactionId) or the existing Payment Projection it settles (projectionId).');
+    if (!transaction.relatedTransactionId) {
+      throw new Error('A PAYMENT_ONLY transaction must reference the existing Cost Transaction it settles (relatedTransactionId).');
     }
-    if (transaction.relatedTransactionId && !existing.some((t) => t.id === transaction.relatedTransactionId)) {
+    if (!existing.some((t) => t.id === transaction.relatedTransactionId)) {
       throw new Error(`Related transaction "${transaction.relatedTransactionId}" was not found on this project.`);
     }
-    if (transaction.projectionId) {
-      const projections = await getPaymentProjections(projectId);
-      if (!projections.some((p) => p.projectionId === transaction.projectionId)) {
-        throw new Error(`Payment Projection "${transaction.projectionId}" was not found on this project.`);
-      }
-    }
+  }
+  if (!isUnallocated(transaction)) {
+    throw new Error('A new Cost Transaction cannot be created already allocated to a Payment Projection (projectionId must be empty).');
   }
   const transactionId = `CST-${new Date().getFullYear()}-${String(existing.length + 1).padStart(6, '0')}`;
   return createDoc(txPath(projectId), {
@@ -185,5 +171,11 @@ export async function postCostTransaction(projectId, transactionId, postedBy) {
 // remains fully visible for audit.
 export async function voidCostTransaction(projectId, transactionId, { voidedBy, voidReason }) {
   if (!voidReason || !voidReason.trim()) throw new Error('A void reason is required.');
+  // C-01D.1 R2, Section 13: an allocated Cost Transaction is frozen (no
+  // cancellation/reversal workflow yet), so it cannot be voided.
+  const current = await getOneDoc(txPath(projectId), transactionId);
+  if (current && !isUnallocated(current)) {
+    throw new Error('This Cost Transaction is allocated to a Payment Projection and can no longer be voided.');
+  }
   return updateDocById(txPath(projectId), transactionId, { status: 'VOID', voidedBy, voidedAt: new Date().toISOString(), voidReason });
 }

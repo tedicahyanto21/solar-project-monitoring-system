@@ -61,6 +61,11 @@ export async function setPlannedCost(projectId, { amount, currency, updatedBy })
   return isLocalMode ? storeSetPlannedCost(projectId, { amount, currency, updatedBy }) : fb.setPlannedCost(projectId, { amount, currency, updatedBy });
 }
 
+// C-01D.1 R2: derived-state helpers live in ONE pure module shared with the
+// mock store, the Firebase service and the UI; re-exported here so callers
+// keep going through the repository.
+export { isEligibleForPayment, getAllocatedTransactions, calculateProjectionTotal } from '../paymentAllocation';
+
 export async function getPaymentProjections(projectId) {
   return isLocalMode ? storeGetPaymentProjections(projectId) : fb.getPaymentProjections(projectId);
 }
@@ -68,16 +73,17 @@ export async function getPaymentProjections(projectId) {
 // B5: Payment Projection is never counted as Actual Cost -- it has its own
 // store/collection and is never read by calculateActualCost above.
 //
-// C-01D.1 Payment Projection Batch: SCM-owned. `projection` is
-// {costTransactionIds, createdBy} -- a batch of existing, eligible Cost
-// Transactions, never a manually entered amount.
+// C-01D.1 R2: SCM-owned. `projection` is {costTransactionIds, createdBy} --
+// the SELECTION of existing, eligible Cost Transactions. Nothing about the
+// batch composition or amount is stored on the projection: the authoritative
+// relationship is CostTransaction.projectionId, set atomically by this call,
+// and the total is derived (calculateProjectionTotal below).
 export async function createPaymentProjection(projectId, projection) {
   return isLocalMode ? storeCreatePaymentProjection(projectId, projection) : fb.createPaymentProjection(projectId, projection);
 }
 
-// C-01D.1: Finance-owned. The only write path from PENDING to PAID; see
-// mockOperationalData.markPaymentProjectionPaid / costService.js for the
-// full rationale (including the auto-generated settlement transaction).
+// C-01D.1 R2: Finance-owned. The only write path from PENDING to PAID;
+// touches settlement fields only, never composition or amount.
 export async function markPaymentProjectionPaid(projectId, projectionId, settlement) {
   return isLocalMode ? storeMarkPaymentProjectionPaid(projectId, projectionId, settlement) : fb.markPaymentProjectionPaid(projectId, projectionId, settlement);
 }
