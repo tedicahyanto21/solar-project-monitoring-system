@@ -292,6 +292,29 @@ service cloud.firestore {
             .hasAny(['amount', 'status', 'transactionType', 'projectionId']);
         }
 
+        // C-01D.1 R2.1 -- Projection reference integrity. Whenever projectionId
+        // is being SET on a Cost Transaction, the Payment Projection it names
+        // must exist, and must be in THIS Cost Transaction's own project:
+        //  * the path is built from `pid` (the transaction's own projectId), so a
+        //    projection with the same id in another project can never satisfy it
+        //    (no orphan, no cross-project reference);
+        //  * existsAfter() evaluates the state AFTER the pending request, so the
+        //    projection created in the SAME transaction/batch (the R2 allocation
+        //    pattern) counts as existing -- plain exists() would wrongly reject
+        //    the legitimate flow.
+        // It runs only when projectionId actually changes (an allocated
+        // transaction's projectionId is frozen, so this fires exactly once per
+        // transaction), applies to every role including Super Admin, and
+        // imposes NO limit on how many transactions one request allocates.
+        // COST: one document-access call per allocated transaction, always the
+        // same projection document. Whether Firestore caches these identical
+        // calls across the operations of one request (the docs only say "some
+        // calls may be cached") is NOT verified -- see the README.
+        function projectionReferenceValid(pid) {
+          return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['projectionId'])
+            || existsAfter(/databases/$(database)/documents/projects/$(pid)/paymentProjections/$(request.resource.data.projectionId));
+        }
+
         // MP#5 Finding: PROJECT_MANAGER stays out of the blanket read list.
         // C-01D.1 R1: SCM is a global functional role for this domain (C-01C).
         // C-01D.1 R2: FINANCE removed from the blanket list -- Finance is
@@ -317,6 +340,7 @@ service cloud.firestore {
         // so the broad owner clause can no longer edit financial fields after
         // allocation. Other metadata updates remain as before.
         allow update: if (!isAllocated() || !touchesFrozenFields())
+          && projectionReferenceValid(projectId)
           && (
             hasRole(['SUPER_ADMIN'])
             // Owner clause (unchanged scope) -- but it may no longer write
@@ -360,6 +384,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['projectId', 'projectionId', 'status', 'currency', 'createdAt', 'createdBy', 'paidDate', 'paymentReference', 'paidBy'])
           && request.resource.data.keys().hasAll(['projectId', 'projectionId', 'status', 'createdAt', 'createdBy'])
           && request.resource.data.projectionId == projectionId
+          && request.resource.data.projectId == projectId
           && request.resource.data.get('paidDate', null) == null
           && request.resource.data.get('paymentReference', null) == null
           && request.resource.data.get('paidBy', null) == null;

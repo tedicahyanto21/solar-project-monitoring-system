@@ -215,6 +215,54 @@ and do not enforce:
   Transaction (`relatedTransactionId`) -- the pre-C-01D settle-a-cost path,
   left unchanged. The UI no longer offers it to Finance.
 
+**C-01D.1 R2.1 -- Projection reference integrity.** A Cost Transaction can
+no longer be given a `projectionId` that points at a Payment Projection that
+does not exist, or at one in a different project. In `firestore.rules`,
+whenever `projectionId` is being set on a `costTransactions` document, the
+update must satisfy `existsAfter(projects/{the transaction's own projectId}/
+paymentProjections/{projectionId})`:
+
+- the path is built from the transaction's **own** project, so a projection
+  with that id in another project cannot satisfy it (same-project rule);
+- `existsAfter` looks at the state *after* the pending request, so the
+  projection created in the **same** transaction/batch (the R2 allocation
+  pattern) counts as existing -- plain `exists()` would reject the legitimate
+  flow;
+- it applies to every role, including Super Admin, and runs only when
+  `projectionId` actually changes (an allocated transaction's `projectionId`
+  is frozen, so it fires once per transaction);
+- it adds no limit on batch size and does not make the projection document
+  carry `totalAmount` or `costTransactionIds` again. A projection document must
+  also carry its own id and the `projectId` of its path.
+
+**Verification status -- read this before trusting the rule:**
+
+- **Executed:** the application/Local Mode behaviour and the rule *text*
+  (`projectionReferenceIntegrity.test.js`, run by `npm test`). These prove the
+  app never creates an orphan or cross-project reference and that the rule is
+  written as designed. They do **not** prove Firestore enforces it.
+- **NOT executed:** the Firestore Emulator suite `tests/rules/
+  projectionReference.emu.mjs` (`npm run test:rules`; needs Java and network
+  access to `storage.googleapis.com` for the emulator jar). It was written but
+  **never run** -- the emulator could not be downloaded where it was authored --
+  so it may contain mistakes. It covers valid same-project allocation (as a
+  `runTransaction`, the exact R2 pattern, and as a `writeBatch`), nonexistent
+  and cross-project rejection, legacy transactions, frozen allocation, atomic
+  rollback, the Finance boundary, and a batch-size measurement for 1-100.
+- **Unmeasured (the one real risk):** the rule costs one document-access call
+  per allocated transaction, always against the same projection document.
+  Firestore allows 20 such calls per transaction/batched write and only says
+  "some calls may be cached"; whether these identical calls are cached across
+  the operations of one request is undocumented. If they are not, very large
+  allocations would be rejected (fail-closed: nothing is written). The
+  measurement in the emulator suite answers this. If it fails at some size,
+  that is a finding to decide on -- no cap was introduced here.
+- **Not closed by this revision:** the rule guarantees a *valid* reference, not
+  that the transaction joins the projection created in the same request. A
+  direct Firestore write could still allocate a transaction to an existing
+  projection in the same project that was created earlier. The application
+  never offers this.
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed

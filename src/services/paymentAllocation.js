@@ -64,3 +64,16 @@ export function getAllocatedTransactions(transactions, projectionId) {
 export function calculateProjectionTotal(transactions, projectionId) {
   return getAllocatedTransactions(transactions, projectionId).reduce((sum, t) => sum + Number(t.amount || 0), 0);
 }
+
+// C-01D.1 R2.1 -- Projection reference integrity.
+// Returns the allocated transactions whose projectionId does NOT resolve to a
+// Payment Projection in the SAME project. `projectionsOfSameProject` must be
+// that project's own projections -- never another project's -- which is
+// exactly what makes a cross-project reference fail to resolve, just as the
+// Firestore rule builds the projection path from the transaction's own
+// projectId. Unallocated transactions (null/absent projectionId, including
+// legacy records) are never violations.
+export function findInvalidProjectionReferences(transactions, projectionsOfSameProject) {
+  const validIds = new Set(projectionsOfSameProject.map((p) => p.projectionId));
+  return transactions.filter((t) => !isUnallocated(t) && !validIds.has(t.projectionId));
+}

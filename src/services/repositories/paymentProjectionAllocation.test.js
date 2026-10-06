@@ -152,8 +152,9 @@ describe('22.4 An allocated Cost Transaction is frozen', () => {
     expect(rules).toMatch(/function touchesFrozenFields\(\)[\s\S]*?hasAny\(\['amount', 'status', 'transactionType', 'projectionId'\]\)/);
     expect(rules).toMatch(/function isAllocated\(\)[\s\S]*?resource\.data\.get\('projectionId', null\) != null/);
     const update = statement(rules, 'update', 'delete');
-    // The freeze is the FIRST conjunct, wrapping the Super Admin, owner and SCM clauses together.
-    expect(update.trim()).toMatch(/^allow update: if \(!isAllocated\(\) \|\| !touchesFrozenFields\(\)\)\s*&& \(/);
+    // The freeze is the FIRST conjunct, then the R2.1 reference check, and only then the
+    // role clauses -- so both gate the Super Admin, owner and SCM clauses together.
+    expect(update.trim()).toMatch(/^allow update: if \(!isAllocated\(\) \|\| !touchesFrozenFields\(\)\)\s*&& projectionReferenceValid\(projectId\)\s*&& \(/);
   });
 
   it('RULES TEXT: the owner clause can no longer write projectionId; only the SCM allocation clause may', () => {

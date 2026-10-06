@@ -735,8 +735,18 @@ export function createPaymentProjection(projectId, { costTransactionIds, created
     paidBy: null,
   };
   const selectedIdSet = new Set(costTransactionIds);
-  ops.paymentProjections = [record, ...ops.paymentProjections];
-  ops.costTransactions = ops.costTransactions.map((t) => (selectedIdSet.has(t.transactionId) ? { ...t, projectionId } : t));
+  const nextProjections = [record, ...ops.paymentProjections];
+  const nextTransactions = ops.costTransactions.map((t) => (selectedIdSet.has(t.transactionId) ? { ...t, projectionId } : t));
+  // C-01D.1 R2.1: Local Mode parity with the Firestore rule -- before anything
+  // is committed, every newly allocated transaction must resolve to a Payment
+  // Projection in THIS project. Always true for the flow above; this is the
+  // guard that keeps it true.
+  const violations = findInvalidProjectionReferences(nextTransactions.filter((t) => selectedIdSet.has(t.transactionId)), nextProjections);
+  if (violations.length > 0) {
+    throw new Error(`Cost Transaction "${violations[0].transactionId}" would reference a Payment Projection that does not exist in this project.`);
+  }
+  ops.paymentProjections = nextProjections;
+  ops.costTransactions = nextTransactions;
   return record;
 }
 
@@ -761,7 +771,7 @@ export function markPaymentProjectionPaid(projectId, projectionId, { paidDate, p
 }
 
 import { checkDuplicateTransaction as sharedCheckDuplicate, normalizeRef } from '../services/duplicateDetection';
-import { assertValidSelection, getIneligibilityReason, isUnallocated } from '../services/paymentAllocation';
+import { assertValidSelection, findInvalidProjectionReferences, getIneligibilityReason, isUnallocated } from '../services/paymentAllocation';
 
 export function getCostTransactions(projectId) {
   return store.get(projectId)?.costTransactions ?? [];
