@@ -66,16 +66,13 @@ export const NAV_ITEMS = [
 // undefined while auth is still initializing; in that case show nothing
 // extra beyond items with no role restriction.
 //
-// C-01C R1.1: label-only correction. SCM uses this as a portfolio/
-// Procurement navigation surface, not Project Master administration (SCM
-// never sees Add/Edit/Delete Project -- see ProjectsPage.jsx's
-// CAN_MANAGE_PROJECT_ROLES, unchanged). This renames only the displayed
-// label for SCM; the item's path, roles, and every other behavior are
-// untouched, and no other role's label changes.
+// The canonical label for /projects is "Project Master" for EVERY role,
+// including SCM. (An earlier revision displayed "Projects" for SCM only; the
+// label is now identical across roles. What SCM can DO there is governed by
+// CAN_MANAGE_PROJECT_ROLES in ProjectsPage.jsx and by firestore.rules, never
+// by a different menu name.)
 export function getNavItemsForRole(role) {
-  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role)).map((item) =>
-    (item.path === '/projects' && role === ROLES.SCM) ? { ...item, label: 'Projects' } : item
-  );
+  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role));
 }
 
 // Centralized route -> allowed-roles lookup (FT-4.1 Correction 1). Reuses

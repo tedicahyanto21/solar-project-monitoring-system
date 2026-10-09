@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "test": "vitest run",
     "preview": "vite preview",
-    "test:rules": "npx firebase-tools emulators:exec --config tests/rules/firebase.json --only firestore --project demo-spms-rules \"node --test tests/rules/projectionReference.emu.mjs\""
+    "test:rules": "npx firebase-tools emulators:exec --config tests/rules/firebase.json --only firestore --project demo-spms-rules \"node --test tests/rules/projectionReference.emu.mjs tests/rules/securityPolicy.emu.mjs\""
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

@@ -335,11 +335,11 @@ describe('22.10 SCM: global for this domain, nothing else', () => {
   it('RULES TEXT: SCM can create a projection globally but cannot mark it PAID; SCM gets no Project Master or assignment write', () => {
     expect(statement(ppRules(), 'create', 'update')).not.toMatch(/isAssignedToProject/);
     expect(statement(ppRules(), 'update', 'delete')).not.toMatch(/SCM/);
-    const projectsBlock = code(between(rulesText(), 'match /projects/{projectId} {', 'match /projectAssignments/{userId}'));
+    const projectsBlock = code(between(rulesText(), 'match /projects/{projectId} {', 'match /projectAssignments/{assignmentId}'));
     const writes = projectsBlock.match(/allow (create|update|delete)[\s\S]*?;/g) ?? [];
     expect(writes.length).toBeGreaterThan(0);
     writes.forEach((w) => expect(w).not.toMatch(/SCM/));
-    const assignments = code(between(rulesText(), 'match /projectAssignments/{userId}', 'match /'.concat('procurementMilestones')));
+    const assignments = code(between(rulesText(), 'match /projectAssignments/{assignmentId}', 'match /'.concat('procurementMilestones')));
     (assignments.match(/allow (write|create|update|delete)[\s\S]*?;/g) ?? []).forEach((w) => expect(w).not.toMatch(/SCM/));
   });
 });

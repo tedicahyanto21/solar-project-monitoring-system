@@ -79,27 +79,57 @@ service cloud.firestore {
     }
 
     // ---- users -------------------------------------------------------------
-    // SPMS-DOC-07 Section 11: Super Admin only for CRUD. A user may read
-    // their own profile (needed to resolve their own role/status).
+    // SPMS-DOC-07 Section 6: Super Admin and Head PM read all profiles; a
+    // user reads their own (needed to resolve their own role/status).
+    // Section 11: only Super Admin writes (CRUD, role, status).
+    //
+    // The owner clause is deliberately FIRST. Evaluation short-circuits
+    // (`true || f()` never runs f()), so a signed-in user can always read
+    // their OWN profile without the role helpers being evaluated at all --
+    // those helpers read this same document's role/status fields, and a
+    // missing or malformed field must never lock a user out of the very
+    // read the app needs to finish logging them in.
+    //
+    // Head PM read is documented policy (Section 6) and is required by the
+    // app: ProjectFormDialog and TeamTab list users so Head PM can choose a
+    // Project Manager. NOT granted: reading the user directory for PROJECT_
+    // MANAGER/SITE_MANAGER/ENGINEERING/HSE (TeamTab candidate list and the
+    // Issues tab user names call getUsers()) -- the policy document does not
+    // grant it and this revision does not invent it; see the README.
     match /users/{userId} {
-      allow read: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow read: if (isSignedIn() && request.auth.uid == userId) || hasRole(['SUPER_ADMIN', 'HEAD_PM']);
       allow write: if isSuperAdmin();
     }
 
     // ---- collection-group queries -------------------------------------------
     // C-01A: Firestore does NOT automatically extend a nested match's rule
-    // (below, under /projects/{projectId}/projectAssignments/{userId}) to
-    // collectionGroup() queries -- a separate `match /{path=**}/...` rule
-    // is required, or ALL collection-group reads against this
-    // subcollection name are denied by default. This is what
-    // getProjectIdsAssignedToUser() needs: a user discovering every
-    // project they are assigned to, without first knowing those
-    // projectIds. Scoped to "only your OWN assignment documents, across
-    // any project" -- a user cannot use this to enumerate anyone else's
-    // assignments, and it grants no access beyond what isAssignedToProject
-    // already implies for a project the caller is genuinely assigned to.
-    match /{path=**}/projectAssignments/{userId} {
-      allow read: if isAuthorized() && request.auth.uid == userId;
+    // (below, under /projects/{projectId}/projectAssignments/{assignmentId})
+    // to collectionGroup() queries -- a separate `match /{path=**}/...` rule
+    // is required, or ALL collection-group reads against this subcollection
+    // name are denied by default. This is what getProjectIdsAssignedToUser()
+    // needs: a user discovering every project they are assigned to, without
+    // first knowing those projectIds.
+    //
+    // WHY THIS RULE READS A FIELD, NOT THE DOCUMENT ID. Firestore rules are
+    // not filters: for a query, the rule must be provably true for EVERY
+    // document the query could return, using only the query's own
+    // constraints. getProjectIdsAssignedToUser() constrains the FIELD
+    // `userId` (`where('userId', '==', uid)`), not the document id. A rule
+    // that compared the path wildcard (the document id) to request.auth.uid
+    // could never be proven from a field filter, so Firestore rejected the
+    // whole query with "Missing or insufficient permissions" even though the
+    // user's own assignment document existed. `resource.data.userId ==
+    // request.auth.uid` IS provable from `where('userId', '==', uid)`, so the
+    // query for the caller's own uid succeeds, while a query for anyone
+    // else's uid -- or an unfiltered query -- is still rejected (no
+    // enumeration of other users' assignments).
+    //
+    // Trusting the `userId` field is safe only because every write binds it
+    // to the document id (see the nested rule below), and
+    // isAssignedToProject() -- which keys on the document id -- stays
+    // consistent with it.
+    match /{path=**}/projectAssignments/{assignmentId} {
+      allow read: if isAuthorized() && resource.data.userId == request.auth.uid;
     }
 
     // ---- projects and subcollections ---------------------------------------
@@ -140,7 +170,7 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['progressWeights', 'updatedAt']));
       allow delete: if isSuperAdmin(); // archive in application logic, not a hard delete pattern
 
-      match /projectAssignments/{userId} {
+      match /projectAssignments/{assignmentId} {
         allow read: if hasRole(['SUPER_ADMIN', 'HEAD_PM']) || isAssignedToProject(projectId);
         // MP#5 Finding: this was previously `hasRole(['SUPER_ADMIN',
         // 'HEAD_PM', 'PROJECT_MANAGER'])` with NO isAssignedToProject
@@ -151,7 +181,18 @@ service cloud.firestore {
         // user's assignment). Scoped to the project the PM is actually
         // assigned to, matching every other subcollection's PM-write
         // pattern (engineeringDocuments, procurementMilestones, etc.).
-        allow write: if hasRole(['SUPER_ADMIN', 'HEAD_PM']) || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId));
+        //
+        // Mismatch fix: the document id and the `userId` field must always be
+        // the same value. The collection-group read rule above trusts the
+        // field, while isAssignedToProject() trusts the document id; this
+        // binding keeps the two views of "who is assigned" identical, so a
+        // writer cannot create a document whose id and userId disagree (an
+        // impersonation vector). Every client writer already satisfies it:
+        // assignUser/setProjectManager use the user's id as the document id
+        // and store it as `userId`.
+        allow create, update: if (hasRole(['SUPER_ADMIN', 'HEAD_PM']) || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId)))
+          && request.resource.data.userId == assignmentId;
+        allow delete: if hasRole(['SUPER_ADMIN', 'HEAD_PM']) || (hasRole(['PROJECT_MANAGER']) && isAssignedToProject(projectId));
       }
 
       match /progressHistory/{snapshotId} {

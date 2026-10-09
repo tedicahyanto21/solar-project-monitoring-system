@@ -448,6 +448,88 @@ same `isAssignedToProject()` pattern used everywhere else. It has not
 been reviewed by a second engineer, deployed, or tested against the
 emulator. Treat it as a starting point for review, not an approved policy.
 
+### Firestore Rules audit (MP#5 corrective revision)
+
+**Important context.** Until this revision the Firebase project ran a
+permissive ruleset (all reads and writes allowed until 2026-12-30). The
+repository's `firestore.rules` had therefore **never been exercised by
+Firestore**; the "Firebase UAT passed" results for C-01A onward were obtained
+under the permissive rules, not under these. Publishing them exposed the first
+real mismatches between the application and the rules.
+
+**Corrections made in `firestore.rules`:**
+
+1. **Collection-group query vs. rule (root cause of `Firestore read
+   collectionGroup(projectAssignments) failed: Missing or insufficient
+   permissions`).** `getProjectIdsAssignedToUser()` filters the *field*
+   `userId` (`where('userId', '==', uid)`), but the collection-group rule
+   compared the *document id* (the path wildcard) to `request.auth.uid`.
+   Rules are not filters: a query is allowed only if the rule is provable for
+   every document it could return using the query's own constraints, and a
+   field filter cannot prove a document-id comparison. The rule now reads
+   `resource.data.userId == request.auth.uid`, which a `userId == uid` filter
+   does prove. Another user's `userId`, or an unfiltered query, is still
+   rejected, so assignments of other users cannot be enumerated.
+2. **Assignment id/field binding.** The rule above trusts the `userId` field,
+   while `isAssignedToProject()` trusts the document id. Assignment
+   `create`/`update` now require `request.resource.data.userId` to equal the
+   document id, so the two can never disagree (an impersonation vector).
+   Every client writer already satisfies this.
+3. **`users` read.** The owner clause is evaluated first (a user can always
+   read their own profile, even if their role/status fields are missing or
+   malformed), and Head PM may read all profiles, as SPMS-DOC-07 Section 6
+   specifies and as `ProjectFormDialog`/`TeamTab` require.
+
+The project-document read (`projects/{id}`) rule itself was **not** changed:
+by static trace it already allows an active user who has an assignment
+document at `projects/{id}/projectAssignments/{uid}`. A denial of that read
+for an assigned user therefore means the assignment is not at that exact path,
+the user is not assigned to that project (the application also reads
+`projects/{id}` for projects the user is not assigned to), or the published
+ruleset differs from this file. Confirm with the Rules Playground.
+
+**Verification status (be precise):**
+
+- `src/services/repositories/securityPolicy.test.js` (run by `npm test`)
+  reads `firestore.rules` and the client source as text. It proves the rules
+  are written as the policy requires and that every collection-group query is
+  consistent with its rule. **It does not prove Firestore enforces them.**
+- `tests/rules/securityPolicy.emu.mjs` and `projectionReference.emu.mjs`
+  (`npm run test:rules`) exercise the real rules in the Firestore Emulator.
+  They were **written but never executed** (the emulator could not be
+  downloaded where they were authored), so they may contain mistakes. Needs
+  Java 11+ and network access for `firebase-tools` to fetch the emulator.
+- Not verified by anyone: runtime behaviour against Firestore.
+
+**Open items found by the audit, deliberately NOT fixed by loosening rules**
+(each needs a decision; see the `it.todo` entries in `securityPolicy.test.js`):
+
+- **Portfolio aggregations assume blanket read.** The Dashboard
+  (`getPortfolioSummary`, `getPortfolioSCurve`), the Cost Control list
+  (`getPortfolioCostSummary`), and the Project Master list for SCM call
+  `getProjects()` without scoping and read each project's subcollections. Roles
+  that read by assignment only (and SCM, which has no read on engineering/HSE/
+  construction/commissioning) get permission-denied. This needs an application
+  change (scope to the user's projects and/or isolate failures per project),
+  not a rules change.
+- **`plannedCost`.** `CostOverviewTab` lets SCM/HC/FINANCE edit it, but the
+  `projects` update rule allows only Super Admin and Head PM, and no approved
+  document grants the other roles. Decide: narrow the UI, or add a
+  field-scoped rule clause.
+- **User directory.** `IssuesTab`/`TeamTab` call `getUsers()` for Project
+  Manager, Site Manager, Engineering and HSE; SPMS-DOC-07 grants that read only
+  to Super Admin and Head PM.
+- **Index.** The collection-group query needs a collection-group-scope
+  single-field index on `projectAssignments.userId`. It was presumably created
+  when the query ran under the permissive rules; confirm in the Console.
+
+**Deploying (a separate, human step; nothing here publishes automatically):**
+review the diff, then either paste `firestore.rules` into Firebase Console ->
+Firestore Database -> Rules and Publish, or run `firebase deploy --only
+firestore:rules` with the Firebase CLI. Before publishing, in the Console's
+Rules Playground simulate a `get` on `projects/<id>` and
+`projects/<id>/projectAssignments/<uid>` as the Project Manager's uid.
+
 ## Known Limitations
 
 - No Firebase project or emulator has ever been exercised in this
