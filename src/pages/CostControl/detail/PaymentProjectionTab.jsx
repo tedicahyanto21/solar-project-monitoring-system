@@ -6,12 +6,15 @@ import {
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import PaymentsRoundedIcon from '@mui/icons-material/PaymentsRounded';
+import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
 import {
   getPaymentProjections, createPaymentProjection, markPaymentProjectionPaid, getCostTransactions,
-  isEligibleForPayment, getAllocatedTransactions, calculateProjectionTotal,
+  isEligibleForPayment, getAllocatedTransactions, calculateProjectionTotal, isPaymentBatchProjection, buildPaymentProjectionDataset,
 } from '../../../services/repositories/costRepository';
+import { generatePaymentProjectionPdf, paymentProjectionPdfFilename } from '../../../services/reportPdf';
 import { useAuth } from '../../../context/AuthContext';
 import { ROLES } from '../../../constants/roles';
+import { getRouteAllowedRoles } from '../../../constants/nav';
 
 // C-01D.1 R2 -- Authoritative Cost Transaction allocation.
 // A Payment Projection is ONE payment batch: metadata + settlement only.
@@ -22,12 +25,17 @@ import { ROLES } from '../../../constants/roles';
 const CAN_CREATE = [ROLES.SUPER_ADMIN, ROLES.SCM];
 const CAN_MARK_PAID = [ROLES.SUPER_ADMIN, ROLES.FINANCE];
 const SETTLEMENT_EMPTY = { paidDate: new Date().toISOString().slice(0, 10), paymentReference: '' };
-const BATCH_STATUSES = ['PENDING', 'PAID'];
 
 export default function PaymentProjectionTab({ projectId, onDataChanged }) {
   const { profile } = useAuth();
   const canCreate = CAN_CREATE.includes(profile?.role);
   const canMarkPaid = CAN_MARK_PAID.includes(profile?.role);
+  // C-01D.2: exporting a projection is READ-ONLY and shows nothing this tab does
+  // not already show, so it is offered to exactly the roles that can already
+  // open Project Cost Control (the central route->roles lookup) -- no new role
+  // list, no broadened access. What each role can actually READ is still
+  // decided by the repository/Firestore access rules the export goes through.
+  const canExport = (getRouteAllowedRoles('/cost-control') ?? []).includes(profile?.role);
   const [projections, setProjections] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [open, setOpen] = useState(false);
@@ -36,6 +44,8 @@ export default function PaymentProjectionTab({ projectId, onDataChanged }) {
   const [payTarget, setPayTarget] = useState(null);
   const [settlementForm, setSettlementForm] = useState(SETTLEMENT_EMPTY);
   const [payError, setPayError] = useState('');
+  const [exportingId, setExportingId] = useState(null);
+  const [exportError, setExportError] = useState('');
 
   function load() {
     getPaymentProjections(projectId).then(setProjections);
@@ -106,10 +116,29 @@ export default function PaymentProjectionTab({ projectId, onDataChanged }) {
     }
   }
 
+  // C-01D.2: read-only. Re-reads the projection and its allocated transactions
+  // through the repository (never Firestore directly), lays out the PDF and
+  // downloads it. Nothing is created, changed, allocated or re-totalled.
+  async function handleExportPdf(projection) {
+    if (!canExport) return; // defense in depth, not just a hidden button
+    setExportError('');
+    setExportingId(projection.projectionId);
+    try {
+      const dataset = await buildPaymentProjectionDataset(projectId, projection.projectionId);
+      const doc = generatePaymentProjectionPdf(dataset);
+      doc.save(paymentProjectionPdfFilename(dataset));
+    } catch (err) {
+      setExportError(err.message);
+    } finally {
+      setExportingId(null);
+    }
+  }
+
   const payTargetItems = payTarget ? getAllocatedTransactions(transactions, payTarget.projectionId) : [];
 
   return (
     <Stack spacing={2}>
+      {exportError && <Alert severity="error" onClose={() => setExportError('')}>{exportError}</Alert>}
       <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography variant="body2" color="text.secondary">
           A Payment Projection is a payment batch. SCM selects one or more POSTED Cost
@@ -128,7 +157,7 @@ export default function PaymentProjectionTab({ projectId, onDataChanged }) {
           <Typography variant="body2" color="text.secondary">No Payment Projections created yet.</Typography>
         )}
         {projections.map((p) => {
-          const isBatch = BATCH_STATUSES.includes(p.status);
+          const isBatch = isPaymentBatchProjection(p);
           const items = getAllocatedTransactions(transactions, p.projectionId);
           const total = calculateProjectionTotal(transactions, p.projectionId);
           return (
@@ -175,6 +204,19 @@ export default function PaymentProjectionTab({ projectId, onDataChanged }) {
                     <Typography variant="caption" color="text.secondary">
                       Paid on {p.paidDate} by {p.paidBy}{p.paymentReference ? ` (ref: ${p.paymentReference})` : ''}
                     </Typography>
+                  )}
+                  {isBatch && canExport && (
+                    <Box>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<PictureAsPdfRoundedIcon fontSize="small" />}
+                        disabled={exportingId === p.projectionId}
+                        onClick={() => handleExportPdf(p)}
+                      >
+                        {exportingId === p.projectionId ? 'Preparing PDF...' : 'Export PDF'}
+                      </Button>
+                    </Box>
                   )}
                   {p.status === 'PENDING' && canMarkPaid && (
                     <Box>

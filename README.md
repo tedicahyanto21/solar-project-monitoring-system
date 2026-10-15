@@ -263,6 +263,75 @@ paymentProjections/{projectionId})`:
   projection in the same project that was created earlier. The application
   never offers this.
 
+### Payment Projection PDF export (C-01D.2)
+
+An existing Payment Projection (a `PENDING` or `PAID` batch) can be exported
+as a PDF from the **Payment Projection** tab of Project Cost Control
+(**Export PDF** inside the expanded projection). The export is **read-only**:
+it creates, changes, allocates, re-totals and re-statuses nothing, and writes no
+document or collection.
+
+```
+Payment Projection tab (Export PDF)
+   -> costRepository.buildPaymentProjectionDataset(projectId, projectionId)   [reads only]
+        -> getProjectById / getPaymentProjections / getCostTransactions        [existing repository reads]
+        -> Firebase service / mock store
+   -> reportPdf.generatePaymentProjectionPdf(dataset)                          [layout only, jsPDF]
+   -> doc.save(paymentProjectionPdfFilename(dataset))                          [browser download]
+```
+
+- **Canonical sources.** The projection (metadata and settlement fields), the
+  Cost Transactions allocated to it, and the project header are re-read through
+  the repository on every export, so the PDF reflects what is persisted now,
+  not what the screen loaded earlier. The allocated transactions are found
+  through `CostTransaction.projectionId` (the authoritative relationship; no
+  stored id list is consulted).
+- **Total.** `summary.total` is `calculateProjectionTotal` -- the same shared
+  function the Payment Projection tab uses -- over the allocated transactions'
+  amounts. It is never read from the projection, never typed, and the PDF layer
+  only prints it. The builder also checks that the listed rows add up to it.
+- **Content.** Header (branding, "Payment Projection", generation date in UTC),
+  project and projection details (status; paid date/reference/by for `PAID`),
+  a table of the allocated transactions (id, date, category, description,
+  reference/invoice, amount) and a financial summary (count and the calculated
+  total, with a note that it is derived). Missing optional fields print as a
+  dash. Long text wraps (an unbreakable token is hard-wrapped), the table
+  continues across pages with its column headings repeated, every page is
+  footed with the projection id and "Page X of Y", and the summary is kept
+  together with its total. Characters outside Latin-1/Windows-1252 are printed
+  as `?` (jsPDF's built-in fonts would otherwise corrupt them).
+  Amounts use the app's existing format (`<currency> <Number.toLocaleString()>`).
+- **File name.** `<projectCode>_PaymentProjection_<projectionId>.pdf`
+  (sanitised; falls back to the project id when there is no project code).
+- **Who can export.** Exactly the roles that can already open Project Cost
+  Control (the central route lookup `getRouteAllowedRoles('/cost-control')`):
+  Super Admin, Head PM, Project Manager, SCM, HC and Finance. No role list was
+  added or widened; the create (Super Admin/SCM) and mark-paid (Super Admin/
+  Finance) lists are unchanged. The export shows nothing the tab does not
+  already show, and reads through the same repository calls, so it is subject to
+  the same data-access rules as the tab itself.
+- **Errors (never a false zero).** If a required read fails, the export stops
+  with "The Payment Projection PDF could not be generated because required data
+  could not be loaded" plus the original message; nothing is downloaded. The
+  export is also refused, with an explicit message, for: a legacy plan record
+  (not a `PENDING`/`PAID` batch), an unknown project/projection, an allocated
+  transaction that is not `POSTED`, a duplicated allocation, a non-numeric
+  amount, or allocated transactions in more than one currency (a single total
+  cannot honestly be shown). A projection that genuinely has no allocated
+  transactions exports with an explicit "No Cost Transactions are allocated"
+  statement and a total of 0. Legacy `PAYMENT_ONLY` records that carry the
+  projection id are not part of the total (they are settlements, not allocated
+  costs); the PDF discloses how many were excluded.
+- **Known limitations / manual UAT.** Tested in Local Mode and with the
+  Firebase service layer mocked; not exercised against real Firestore. Firestore
+  Rules were **not** part of this milestone and are currently temporary and
+  permissive, so a pass here says nothing about role-level data security: each
+  role's read access to projections/transactions still needs the dedicated final
+  security audit. Still manual: the button's visibility per role, the actual
+  browser download and file name, how the PDF prints on paper, and a PDF with
+  real production data. Cost Control reads the project without per-user
+  scoping (existing behaviour, unchanged here).
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed

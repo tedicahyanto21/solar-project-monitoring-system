@@ -19,7 +19,8 @@ import {
 } from '../../data/mockOperationalData';
 import { isLocalMode } from '../firebase/config';
 import * as fb from '../firebase/costService';
-import { getProjects } from './projectRepository';
+import { getProjects, getProjectById } from './projectRepository';
+import { getAllocatedTransactions, calculateProjectionTotal, isPaymentBatchProjection } from '../paymentAllocation';
 
 function round0(n) { return Math.round(n); }
 
@@ -64,7 +65,7 @@ export async function setPlannedCost(projectId, { amount, currency, updatedBy })
 // C-01D.1 R2: derived-state helpers live in ONE pure module shared with the
 // mock store, the Firebase service and the UI; re-exported here so callers
 // keep going through the repository.
-export { isEligibleForPayment, getAllocatedTransactions, calculateProjectionTotal } from '../paymentAllocation';
+export { isEligibleForPayment, getAllocatedTransactions, calculateProjectionTotal, isPaymentBatchProjection } from '../paymentAllocation';
 
 export async function getPaymentProjections(projectId) {
   return isLocalMode ? storeGetPaymentProjections(projectId) : fb.getPaymentProjections(projectId);
@@ -86,6 +87,107 @@ export async function createPaymentProjection(projectId, projection) {
 // touches settlement fields only, never composition or amount.
 export async function markPaymentProjectionPaid(projectId, projectionId, settlement) {
   return isLocalMode ? storeMarkPaymentProjectionPaid(projectId, projectionId, settlement) : fb.markPaymentProjectionPaid(projectId, projectionId, settlement);
+}
+
+// C-01D.2 -- Payment Projection PDF: the READ-ONLY dataset that
+// services/reportPdf.js lays out (the PDF layer never calculates anything).
+//
+// Canonical sources, all read through this repository (never Firestore
+// directly from the UI) and re-read on every call so the document reflects
+// what is persisted NOW, not what a screen loaded earlier:
+//   * the Payment Projection  -> getPaymentProjections(projectId)
+//   * its Cost Transactions   -> getCostTransactions(projectId), filtered by
+//     CostTransaction.projectionId (the authoritative relationship, via the
+//     shared getAllocatedTransactions -- no stored id list is consulted)
+//   * the project header      -> getProjectById(projectId)
+// The total is calculateProjectionTotal -- the SAME function the Payment
+// Projection tab uses -- so the PDF can never show a different number than
+// the screen. Nothing is written anywhere.
+//
+// Failures are surfaced, never turned into a false zero: a failed read throws
+// (with the original error as `cause`); an inconsistency in the data throws
+// instead of producing a financial document with a questionable total.
+export async function buildPaymentProjectionDataset(projectId, projectionId, { now = new Date() } = {}) {
+  let project; let projections; let transactions;
+  try {
+    [project, projections, transactions] = await Promise.all([
+      getProjectById(projectId), getPaymentProjections(projectId), getCostTransactions(projectId),
+    ]);
+  } catch (err) {
+    throw new Error(`The Payment Projection PDF could not be generated because required data could not be loaded. ${err.message}`, { cause: err });
+  }
+  if (!project) throw new Error(`Project "${projectId}" was not found.`);
+  const projection = projections.find((p) => p.projectionId === projectionId);
+  if (!projection) throw new Error(`Payment Projection "${projectionId}" was not found on this project.`);
+  if (!isPaymentBatchProjection(projection)) {
+    throw new Error(`"${projectionId}" is a legacy plan record (status: ${projection.status ?? 'unknown'}), not a payment batch, so it cannot be exported.`);
+  }
+
+  const allocated = getAllocatedTransactions(transactions, projectionId);
+  const ids = allocated.map((t) => t.transactionId);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(`Data inconsistency: Payment Projection "${projectionId}" has the same Cost Transaction allocated more than once; the PDF was not generated.`);
+  }
+  // R2 invariant: only POSTED transactions can be allocated and an allocated
+  // transaction is frozen. A different status means the data is inconsistent.
+  const notPosted = allocated.filter((t) => t.status !== 'POSTED');
+  if (notPosted.length > 0) {
+    throw new Error(`Data inconsistency: allocated Cost Transaction(s) ${notPosted.map((t) => t.transactionId).join(', ')} are not POSTED; the PDF was not generated.`);
+  }
+  const badAmount = allocated.filter((t) => !Number.isFinite(Number(t.amount || 0)));
+  if (badAmount.length > 0) {
+    throw new Error(`Data inconsistency: Cost Transaction(s) ${badAmount.map((t) => t.transactionId).join(', ')} have a non-numeric amount; the PDF was not generated.`);
+  }
+  // One document cannot honestly sum amounts in different currencies.
+  const currencies = [...new Set(allocated.map((t) => t.currency || projection.currency || 'IDR'))];
+  if (currencies.length > 1) {
+    throw new Error(`Payment Projection "${projectionId}" mixes currencies (${currencies.join(', ')}); a single total cannot be shown, so the PDF was not generated.`);
+  }
+  const currency = currencies[0] ?? projection.currency ?? 'IDR';
+
+  const total = calculateProjectionTotal(transactions, projectionId);
+  const rows = [...allocated]
+    .sort((a, b) => String(a.transactionDate ?? '').localeCompare(String(b.transactionDate ?? '')) || String(a.transactionId).localeCompare(String(b.transactionId)))
+    .map((t) => ({
+      transactionId: t.transactionId,
+      transactionDate: t.transactionDate ?? null,
+      category: t.category ?? null,
+      description: t.description ?? null,
+      referenceNumber: t.referenceNumber || null,
+      invoiceNumber: t.invoiceNumber || null,
+      amount: Number(t.amount || 0),
+      currency,
+    }));
+  // The displayed rows must add up to the displayed total, always.
+  if (Math.abs(rows.reduce((sum, r) => sum + r.amount, 0) - total) > 0.005) {
+    throw new Error(`Data inconsistency: the listed Cost Transactions do not add up to the derived total for "${projectionId}"; the PDF was not generated.`);
+  }
+
+  return {
+    generatedOn: now.toISOString().slice(0, 10),
+    project: {
+      id: project.id ?? projectId,
+      code: project.projectCode ?? null,
+      name: project.projectName ?? null,
+      manager: project.projectManager ?? null,
+    },
+    projection: {
+      projectionId: projection.projectionId,
+      status: projection.status,
+      createdAt: projection.createdAt ?? null,
+      createdBy: projection.createdBy ?? null,
+      paidDate: projection.paidDate ?? null,
+      paymentReference: projection.paymentReference ?? null,
+      paidBy: projection.paidBy ?? null,
+    },
+    transactions: rows,
+    summary: { count: rows.length, total, currency },
+    // Legacy PAYMENT_ONLY settlement records may carry this projectionId as a
+    // reference; they are settlements, not allocated costs (see
+    // paymentAllocation.getAllocatedTransactions) and never count toward the
+    // total. Counted here so the PDF can say so instead of omitting silently.
+    excludedSettlementRecords: transactions.filter((t) => t.projectionId === projectionId && t.transactionType === 'PAYMENT_ONLY').length,
+  };
 }
 
 // B8: layered duplicate check (services/duplicateDetection.js, shared by

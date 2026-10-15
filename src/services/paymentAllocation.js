@@ -77,3 +77,13 @@ export function findInvalidProjectionReferences(transactions, projectionsOfSameP
   const validIds = new Set(projectionsOfSameProject.map((p) => p.projectionId));
   return transactions.filter((t) => !isUnallocated(t) && !validIds.has(t.projectionId));
 }
+
+// C-01D.2 -- Which Payment Projection records are payment BATCHES (the model
+// established by C-01D.1), as opposed to legacy plan records that predate it
+// (status 'PLANNED' and the old plannedAmount shape). Shared by the Payment
+// Projection tab and the PDF export so the two can never disagree on it.
+export const PAYMENT_BATCH_STATUSES = ['PENDING', 'PAID'];
+
+export function isPaymentBatchProjection(projection) {
+  return PAYMENT_BATCH_STATUSES.includes(projection?.status);
+}
