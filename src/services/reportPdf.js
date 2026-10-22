@@ -28,7 +28,7 @@ function ensureSpace(doc, needed) {
 function header(doc, title, project) {
   doc.setFontSize(9);
   doc.setTextColor(...MUTED);
-  doc.text('SPMS \u2014 Solar Project Monitoring System \u00b7 PT Solar EPC Nusantara', MARGIN, y);
+  doc.text('SPMS \u2014 Solar Project Monitoring System \u00b7 PT EMITS', MARGIN, y);
   y += 7;
   doc.setFontSize(16);
   doc.setTextColor(...NAVY);
