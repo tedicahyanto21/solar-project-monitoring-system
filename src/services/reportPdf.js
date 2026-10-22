@@ -366,7 +366,10 @@ export function generatePaymentProjectionPdf(dataset) {
 
   sectionTitle(doc, 'Payment Projection Details');
   keyValueWrapped(doc, 'Projection ID', projection.projectionId);
-  keyValueWrapped(doc, 'Project ID', project.id);
+  // C-01D.2 R3: the human-readable Project No. (the Project Master project code),
+  // not the internal project id. If the project record has none, say so --
+  // never fall back to an internal id.
+  keyValueWrapped(doc, 'Project No.', project.code ?? 'Not set on the project record');
   keyValueRow(doc, 'Status', pdfText(projection.status));
   keyValueRow(doc, 'Created', projection.createdAt ? `${String(projection.createdAt).slice(0, 10)}${projection.createdBy ? ` by ${pdfText(projection.createdBy)}` : ''}` : null);
   if (projection.status === 'PAID') {

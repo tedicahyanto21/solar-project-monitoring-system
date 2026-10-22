@@ -295,7 +295,10 @@ Payment Projection tab (Export PDF)
   amounts. It is never read from the projection, never typed, and the PDF layer
   only prints it. The builder also checks that the listed rows add up to it.
 - **Content.** Header (branding, "Payment Projection", generation date in UTC),
-  project and projection details (status; paid date/reference/by for `PAID`),
+  project and projection details (**Project No.** -- the Project Master
+  `projectCode`, looked up through the repository -- and the projection id,
+  which are kept separate and never substituted for one another; status; paid
+  date/reference/by for `PAID`),
   a table of the allocated transactions (id, date, category, description,
   reference/invoice, amount) and a financial summary (count and the calculated
   total, with a note that it is derived). Missing optional fields print as a
@@ -320,8 +323,11 @@ Payment Projection tab (Export PDF)
   export is also refused, with an explicit message, for: a legacy plan record
   (not a `PENDING`/`PAID` batch), an unknown project/projection, an allocated
   transaction that is not `POSTED`, a duplicated allocation, a non-numeric
-  amount, or allocated transactions in more than one currency (a single total
-  cannot honestly be shown). A projection that genuinely has no allocated
+  amount, a projection whose recorded `projectId` names a different project
+  than the one it was read from, or allocated transactions in more than one
+  currency (a single total cannot honestly be shown). A project record with no
+  project code prints "Not set on the project record" as its Project No. (never
+  an internal id). A projection that genuinely has no allocated
   transactions exports with an explicit "No Cost Transactions are allocated"
   statement and a total of 0. Legacy `PAYMENT_ONLY` records that carry the
   projection id are not part of the total (they are settlements, not allocated

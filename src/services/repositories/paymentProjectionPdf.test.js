@@ -351,3 +351,103 @@ describe('13: existing PDF exports still work', () => {
     expect(allStrings(monthly)).toContain('Monthly Project Report');
   });
 });
+
+// ---------------------------------------------------------------------------
+// C-01D.2 R3 -- Project No. display integrity. The identity row of the report
+// is the human-readable Project No. (the Project Master `projectCode`,
+// SPMS-REQ-002), looked up through the repository from the projection's own
+// project reference. It is never the internal project id and never the
+// projection id.
+// ---------------------------------------------------------------------------
+const valueAfter = (doc, label) => {
+  const t = allStrings(doc);
+  const i = t.indexOf(label);
+  return i < 0 ? undefined : t[i + 1];
+};
+const MISSING_MARKER = 'Not set on the project record';
+
+describe('C-01D.2 R3: a projection linked to a project with a known Project No.', () => {
+  const projectNo = initialProjects[4].projectCode;
+
+  it('the report shows that project\'s Project No. (Project Master projectCode) under "Project No."; the internal-id row is gone', async () => {
+    const pp = batch([posted()]);
+    const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+    expect(projectNo).toBeTruthy(); // the fixture really has a Project No.
+    expect(ds.project.code).toBe(projectNo);
+    const doc = generatePaymentProjectionPdf(ds);
+    expect(valueAfter(doc, 'Project No.')).toBe(projectNo);
+    expect(allStrings(doc)).not.toContain('Project ID');
+  });
+
+  it('Projection ID stays separate: printed unchanged under its own label, and never used as the Project No.', async () => {
+    const pp = batch([posted()]);
+    const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+    const doc = generatePaymentProjectionPdf(ds);
+    expect(ds.projection.projectionId).toBe(pp.projectionId);
+    expect(valueAfter(doc, 'Projection ID')).toBe(pp.projectionId);
+    expect(valueAfter(doc, 'Project No.')).not.toBe(pp.projectionId);
+    expect(valueAfter(doc, 'Project No.')).not.toContain('-pp-');
+  });
+
+  it('the Project No. is the project code, not the project\'s internal id (which is available but must not be shown as the identity)', async () => {
+    const pp = batch([posted()]);
+    const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+    expect(ds.project.id).toBe(pid);
+    expect(pid).not.toBe(projectNo);
+    const shown = valueAfter(generatePaymentProjectionPdf(ds), 'Project No.');
+    expect(shown).toBe(projectNo); // positively the code (not merely "something other than the id")
+    expect(shown).not.toBe(pid);
+  });
+
+  it('surrounding whitespace in the stored project code is trimmed', async () => {
+    const original = initialProjects[4].projectCode;
+    try {
+      initialProjects[4].projectCode = `  ${original}  `;
+      const pp = batch([posted()]);
+      const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+      expect(ds.project.code).toBe(original);
+      expect(valueAfter(generatePaymentProjectionPdf(ds), 'Project No.')).toBe(original);
+    } finally {
+      initialProjects[4].projectCode = original;
+    }
+  });
+});
+
+describe('C-01D.2 R3: a missing or invalid project reference is handled explicitly, never substituted', () => {
+  it('a project with no/blank project code shows an explicit marker -- not the project id, not the projection id, not a blank', async () => {
+    const original = initialProjects[4].projectCode;
+    const pp = batch([posted()]);
+    try {
+      for (const blank of ['', '   ', undefined, null]) {
+        initialProjects[4].projectCode = blank;
+        const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+        expect(ds.project.code).toBeNull();
+        const shown = valueAfter(generatePaymentProjectionPdf(ds), 'Project No.');
+        expect(shown).toBe(MISSING_MARKER);
+        expect(shown).not.toBe(pid);
+        expect(shown).not.toBe(pp.projectionId);
+        expect(shown).not.toBe('');
+      }
+    } finally {
+      initialProjects[4].projectCode = original;
+    }
+  });
+
+  it('a projection whose recorded projectId names ANOTHER project is refused with an explicit error (no report is produced)', async () => {
+    const pp = batch([posted()]);
+    ops().paymentProjections.find((p) => p.projectionId === pp.projectionId).projectId = 'some-other-project';
+    await expect(buildPaymentProjectionDataset(pid, pp.projectionId))
+      .rejects.toThrow(`Payment Projection "${pp.projectionId}" is linked to project "some-other-project", not "${pid}"; the PDF was not generated.`);
+  });
+
+  it('a projection with no projectId field is still unambiguous (it lives under its project) and exports with that project\'s Project No.', async () => {
+    const pp = batch([posted()]);
+    delete ops().paymentProjections.find((p) => p.projectionId === pp.projectionId).projectId;
+    const ds = await buildPaymentProjectionDataset(pid, pp.projectionId);
+    expect(valueAfter(generatePaymentProjectionPdf(ds), 'Project No.')).toBe(initialProjects[4].projectCode);
+  });
+
+  it('an unknown project is still refused (unchanged behaviour)', async () => {
+    await expect(buildPaymentProjectionDataset('no-such-project', 'x')).rejects.toThrow(/not found/);
+  });
+});

@@ -122,6 +122,16 @@ export async function buildPaymentProjectionDataset(projectId, projectionId, { n
   if (!isPaymentBatchProjection(projection)) {
     throw new Error(`"${projectionId}" is a legacy plan record (status: ${projection.status ?? 'unknown'}), not a payment batch, so it cannot be exported.`);
   }
+  // C-01D.2 R3: the projection carries its own project reference (`projectId`,
+  // which the Firestore rules require to equal the project in its path). If it
+  // names a DIFFERENT project than the one it was read from, the link is
+  // invalid: refuse, rather than print a report under the wrong project. A
+  // projection with no `projectId` field is still unambiguous (it lives under
+  // projects/{projectId}/paymentProjections), so it is accepted.
+  const linkedProjectId = String(projection.projectId ?? '').trim();
+  if (linkedProjectId && linkedProjectId !== projectId) {
+    throw new Error(`Payment Projection "${projectionId}" is linked to project "${linkedProjectId}", not "${projectId}"; the PDF was not generated.`);
+  }
 
   const allocated = getAllocatedTransactions(transactions, projectionId);
   const ids = allocated.map((t) => t.transactionId);
@@ -166,8 +176,16 @@ export async function buildPaymentProjectionDataset(projectId, projectionId, { n
   return {
     generatedOn: now.toISOString().slice(0, 10),
     project: {
-      id: project.id ?? projectId,
-      code: project.projectCode ?? null,
+      // C-01D.2 R3: `id` is the lookup key -- the Firestore document id, which is
+      // also where the projection lives. It is NOT read back from the project
+      // object: getOneDoc spreads stored data AFTER the document id, so a stored
+      // `id` field (empty, or a stale copy) silently replaces it. It is internal
+      // and is not shown in the report.
+      id: projectId,
+      // Project No. = the Project Master `projectCode` (SPMS-REQ-002, "a unique
+      // project code"; labelled "Project Code" in the UI). Trimmed; blank means
+      // missing. It is never substituted with the project id or the projection id.
+      code: String(project.projectCode ?? '').trim() || null,
       name: project.projectName ?? null,
       manager: project.projectManager ?? null,
     },
