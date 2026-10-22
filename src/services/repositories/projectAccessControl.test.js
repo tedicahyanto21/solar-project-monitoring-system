@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+vi.mock('../firebase/config', () => ({ isLocalMode: true }));
 import { getProjects, getProjectById } from './projectRepository';
 import { getAssignments, assignUser, setProjectManager, removeAssignment } from './projectDetailRepository';
 import { getUsers } from './userRepository';
@@ -6,8 +7,13 @@ import { initialProjects } from '../../data/mockProjects';
 import { ROLES } from '../../constants/roles';
 
 // C-01A: Access & Assignment Control Correction. These tests run in LOCAL
-// MODE (no live Firebase in this environment -- see the final report's
-// Firebase Verification section). They exercise the SAME repository
+// MODE and are PINNED to it by the vi.mock of firebase/config above -- the
+// same rule every other repository test follows (README, "Testing"; MP#4 R2).
+// Without the pin, isLocalMode is decided by whatever .env the machine has:
+// on a machine with a Firebase configuration the repositories switch to REAL
+// Firestore, where the fixtures used here (proj-005, proj-006, the mock users)
+// do not exist, and assignUser/removeAssignment would create and delete real
+// assignment documents. They exercise the SAME repository
 // functions the UI calls (projectRepository.getProjects/getProjectById,
 // projectDetailRepository.assignUser/setProjectManager/removeAssignment),
 // so a passing test here is evidence the fix works at the layer the UAT
@@ -18,7 +24,15 @@ const projB = initialProjects[5].id;
 
 async function getTwoDistinctUsers(role) {
   const users = await getUsers();
-  return users.filter((u) => u.role === role && u.status === 'ACTIVE');
+  const matches = users.filter((u) => u.role === role && u.status === 'ACTIVE');
+  // The Local Mode fixture (data/mockUsers.js) holds two ACTIVE users for each
+  // role these tests destructure (PROJECT_MANAGER, SITE_MANAGER). If that ever
+  // stops being true, fail with a clear message instead of a TypeError on an
+  // undefined second user.
+  if (matches.length < 2) {
+    throw new Error(`Test fixture problem: expected at least 2 ACTIVE ${role} users, found ${matches.length}. These tests require the Local Mode mock users.`);
+  }
+  return matches;
 }
 
 describe('C-01A Section 10, PM isolation (Tests 1-4)', () => {
