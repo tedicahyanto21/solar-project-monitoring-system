@@ -176,13 +176,17 @@ contains or what they add up to.
 - **Finance (project-assignment scoped):** only `PENDING -> PAID` plus the
   settlement fields on a project it is assigned to; it cannot create a
   projection or touch composition or amount (neither is stored on it).
-- **PAYMENT_ONLY:** the concept and all legacy records are preserved and still
-  excluded from Actual Cost. This revision **no longer generates** a
-  PAYMENT_ONLY record when a projection is paid: the total is no longer
-  stored, so a generated record's amount could not be checked against any
-  authoritative value. The projection's settlement fields are the audit
-  trail. (A legacy settlement record that carries a `projectionId` is never
-  counted toward a derived total.)
+- **PAID creates no settlement transaction (approved decision, "Option A").**
+  Marking a projection PAID does **not** create a `PAYMENT_ONLY` Cost
+  Transaction. The projection stays the payment-batch record, and its
+  `status`, `paidDate`, `paymentReference` and `paidBy` are the audit trail;
+  allocated transactions, Actual Cost and the derived total are unchanged. See
+  `docs/07_Decision_Log/Payment_Projection_PAID_Settlement_Decision.md`. Whether
+  a real payment must be represented as an independently recorded financial
+  transaction is a separate question that decision does not answer. The
+  `PAYMENT_ONLY` concept and all legacy records are preserved: they are still
+  excluded from Actual Cost, and a legacy settlement record that carries a
+  `projectionId` is never counted toward a derived total.
 - **Legacy Payment Projections** (old `plannedAmount` / `totalAmount` /
   `costTransactionIds` shapes) are preserved untouched, shown as "Legacy
   plan", ignored by the derived total, and cannot be marked PAID. Projections
