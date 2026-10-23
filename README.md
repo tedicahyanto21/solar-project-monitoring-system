@@ -342,6 +342,37 @@ Payment Projection tab (Export PDF)
   real production data. Cost Control reads the project without per-user
   scoping (existing behaviour, unchanged here).
 
+## Engineering Document No. and Engineering / HSE status (Final UAT Patch A)
+
+* **Document No.** is the existing `docId` field and is **entered manually**
+  (it is no longer generated). It is required, trimmed, and must be unique
+  **per project, ignoring upper/lower case**; the same number may be used in a
+  different project. It **cannot be changed after creation** (an update that
+  carries `docId` is rejected). The internal document `id` is separate and
+  always automatic. Legacy documents with no `docId` stay readable and never
+  conflict.
+* **Review Status** (`APPROVED` / `COMMENTED` / `REJECTED`) can be changed on an
+  existing Engineering document, and **HSE status** (`Pending` /
+  `Valid / Closed`) on an existing HSE item, by the roles that already manage
+  those tabs (Engineering / HSE, plus Super Admin). Changing a status **never
+  changes `progressContribution`**, weights, or any other field: progress stays
+  an independent, data-driven value.
+* Every update through these repository functions is stamped with `updatedAt`
+  (ISO string) and `updatedBy` (the actor's display name), per the Database
+  Design audit convention. This includes the existing progress edit.
+* **Validation lives in `projectDetailRepository.js`**, once, so Local Mode and
+  Firebase mode behave the same; the store/service functions stay plain
+  persistence. UI handlers re-check the role as defense in depth.
+* **Limitation -- uniqueness is application-level only.** It is a read-then-write
+  check: two users creating the same number at the same moment can both pass,
+  and Firestore Rules cannot enforce uniqueness of a non-ID field. It is **not**
+  concurrency-safe and is **not** server-enforced.
+* **Limitation -- Firestore Rules unchanged.** The `engineeringDocuments` and
+  `hseItems` rules allow the owning role (assigned) or Super Admin to write
+  **any field**, so a direct Firestore write can bypass every validation above
+  (change `docId`, set an arbitrary status, forge `updatedBy`/`updatedAt`).
+  Rules hardening is a separate, mandatory pre-production security task.
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed

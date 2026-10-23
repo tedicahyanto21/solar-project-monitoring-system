@@ -12,6 +12,9 @@ import { initialProjects, PROJECT_MANAGERS } from './mockProjects';
 
 export const MILESTONE_PHASES = ['Engineering', 'Procurement', 'Construction', 'Commissioning', 'COD'];
 export const REVIEW_STATUSES = ['APPROVED', 'COMMENTED', 'REJECTED'];
+// The two HSE / permit item statuses already used by the seed data and by the
+// reports (reportRepository counts `=== 'Valid / Closed'`; everything else is pending).
+export const HSE_STATUSES = ['Pending', 'Valid / Closed'];
 export const ISSUE_STATUSES = ['OPEN', 'CLOSED'];
 export const ISSUE_SEVERITIES = ['Critical', 'High', 'Medium', 'Low'];
 

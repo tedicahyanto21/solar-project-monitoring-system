@@ -23,6 +23,8 @@ import { isLocalMode } from '../firebase/config';
 import {
   getOperations,
   DEFAULT_WEIGHTS,
+  REVIEW_STATUSES,
+  HSE_STATUSES,
   addEngineeringDocument,
   updateEngineeringDocument as storeUpdateEngineeringDocument,
   addHseDocument,
@@ -88,15 +90,70 @@ export async function getEngineeringDocuments(projectId) {
   return isLocalMode ? (getOperations(projectId)?.engineeringDocuments ?? []) : fb.getEngineeringDocuments(projectId);
 }
 
+// ---- Final UAT Patch A: Engineering Document No., review status, HSE status ----
+// Validation lives HERE, once, so Local Mode and Firebase mode behave
+// identically (the store/service functions below stay plain persistence).
+//
+// Document No. is the existing `docId` field -- the human-entered official
+// number. The internal document `id` is separate and always automatic.
+function normalizeDocumentNumber(value) {
+  return String(value ?? '').trim();
+}
+
+function assertAllowedStatus(value, allowed, label) {
+  if (!allowed.includes(value)) {
+    throw new Error(`Invalid ${label} "${value}". Allowed values: ${allowed.join(', ')}.`);
+  }
+}
+
+// Audit metadata, per the Database Design audit convention (updatedBy /
+// updatedAt) and the existing operational-collection format: an ISO string
+// timestamp and the actor's display name. `?? null`, never `undefined`: the
+// Firestore SDK rejects undefined field values. Stamped AFTER the caller's
+// patch so a patch can never spoof it.
+function auditStamp(updatedBy) {
+  return { updatedAt: new Date().toISOString(), updatedBy: updatedBy ?? null };
+}
+
 export async function createEngineeringDocument(projectId, doc) {
-  return isLocalMode ? addEngineeringDocument(projectId, doc) : fb.addEngineeringDocument(projectId, doc);
+  if (doc && 'id' in doc) throw new Error('The internal document id is generated automatically and cannot be supplied.');
+  const docId = normalizeDocumentNumber(doc?.docId);
+  if (!docId) throw new Error('Document No. is required.');
+  if (doc.reviewStatus !== undefined) assertAllowedStatus(doc.reviewStatus, REVIEW_STATUSES, 'Review Status');
+  // Unique per project, ignoring upper/lower case. Legacy documents with no
+  // docId are ignored (never a conflict) and stay readable.
+  //
+  // LIMITATION: this is read-then-write. Two users creating the same number at
+  // the same moment can both pass the check -- it is NOT concurrency-safe, and
+  // Firestore Rules cannot enforce uniqueness of a non-ID field. Do not rely on
+  // it as a server-enforced guarantee.
+  const existing = await getEngineeringDocuments(projectId);
+  const clash = existing.find((d) => normalizeDocumentNumber(d.docId) && normalizeDocumentNumber(d.docId).toLowerCase() === docId.toLowerCase());
+  if (clash) {
+    throw new Error(`Document No. "${docId}" is already used in this project ("${clash.docId}"). Document Nos. must be unique per project, ignoring upper/lower case.`);
+  }
+  const payload = { ...doc, docId };
+  return isLocalMode ? addEngineeringDocument(projectId, payload) : fb.addEngineeringDocument(projectId, payload);
 }
 
 // FT-5 A3: authorized Engineering users maintain progressContribution on an
 // EXISTING document over time -- this is the normal way progress is kept
 // current, not just document creation.
-export async function updateEngineeringDocument(projectId, docId, patch) {
-  return isLocalMode ? storeUpdateEngineeringDocument(projectId, docId, patch) : fb.updateEngineeringDocument(projectId, docId, patch);
+//
+// Final UAT Patch A: Review Status is editable here too. NOTE the second
+// argument is the INTERNAL document id (not the Document No.). Document No.
+// can never be changed through an update, so the uniqueness check at creation
+// cannot be bypassed. Changing reviewStatus never touches progressContribution
+// (they are independent, data-driven values). Every update through this
+// function -- including the existing progress edit -- is stamped with
+// updatedAt/updatedBy.
+export async function updateEngineeringDocument(projectId, docId, patch, updatedBy) {
+  const changes = patch ?? {};
+  if ('docId' in changes) throw new Error('Document No. cannot be changed after creation.');
+  if ('id' in changes) throw new Error('The internal document id cannot be changed.');
+  if ('reviewStatus' in changes) assertAllowedStatus(changes.reviewStatus, REVIEW_STATUSES, 'Review Status');
+  const stamped = { ...changes, ...auditStamp(updatedBy) };
+  return isLocalMode ? storeUpdateEngineeringDocument(projectId, docId, stamped) : fb.updateEngineeringDocument(projectId, docId, stamped);
 }
 
 export async function getHseDocuments(projectId) {
@@ -104,13 +161,23 @@ export async function getHseDocuments(projectId) {
 }
 
 export async function createHseDocument(projectId, doc) {
+  if (doc && 'id' in doc) throw new Error('The internal item id is generated automatically and cannot be supplied.');
+  if (doc?.status !== undefined) assertAllowedStatus(doc.status, HSE_STATUSES, 'HSE status');
   return isLocalMode ? addHseDocument(projectId, doc) : fb.addHseDocument(projectId, doc);
 }
 
 // FT-5 A4: same principle as Engineering -- authorized HSE users update an
 // existing item's progressContribution independently of its status.
-export async function updateHseDocument(projectId, docId, patch) {
-  return isLocalMode ? storeUpdateHseDocument(projectId, docId, patch) : fb.updateHseDocument(projectId, docId, patch);
+//
+// Final UAT Patch A: HSE status is editable (`Pending` / `Valid / Closed`) and,
+// like Engineering, never changes progressContribution. Stamped with
+// updatedAt/updatedBy on every update.
+export async function updateHseDocument(projectId, docId, patch, updatedBy) {
+  const changes = patch ?? {};
+  if ('id' in changes) throw new Error('The internal item id cannot be changed.');
+  if ('status' in changes) assertAllowedStatus(changes.status, HSE_STATUSES, 'HSE status');
+  const stamped = { ...changes, ...auditStamp(updatedBy) };
+  return isLocalMode ? storeUpdateHseDocument(projectId, docId, stamped) : fb.updateHseDocument(projectId, docId, stamped);
 }
 
 export async function getProcurementMilestones(projectId) {
