@@ -775,6 +775,7 @@ export function markPaymentProjectionPaid(projectId, projectionId, { paidDate, p
 
 import { checkDuplicateTransaction as sharedCheckDuplicate, normalizeRef } from '../services/duplicateDetection';
 import { assertValidSelection, findInvalidProjectionReferences, getIneligibilityReason, isUnallocated } from '../services/paymentAllocation';
+import { parseAmount, buildDraftEdit, assertDraftEditable, evaluateEditDuplicate } from '../services/costTransactionEdit';
 
 export function getCostTransactions(projectId) {
   return store.get(projectId)?.costTransactions ?? [];
@@ -784,10 +785,13 @@ export function getCostTransactions(projectId) {
 // services/duplicateDetection.js (shared with the Firestore backend, see
 // FT-5→FT-8 consolidation Part D); this just supplies the mock store's
 // current transaction list.
-export function checkDuplicateTransaction(projectId, candidate) {
+// `excludeTransactionId` (optional, Final UAT Patch B): when a Draft is being
+// edited it must not be compared with ITSELF. Omitted, behaviour is unchanged.
+export function checkDuplicateTransaction(projectId, candidate, excludeTransactionId) {
   const ops = store.get(projectId);
   if (!ops) return { level: null, reasons: [] };
-  return sharedCheckDuplicate(projectId, candidate, ops.costTransactions);
+  const others = excludeTransactionId ? ops.costTransactions.filter((t) => t.transactionId !== excludeTransactionId) : ops.costTransactions;
+  return sharedCheckDuplicate(projectId, candidate, others);
 }
 
 // B6/B9: creates a transaction. Strong duplicates are BLOCKED unless an
@@ -811,6 +815,10 @@ export const TRANSACTION_TYPES = ['COST', 'PAYMENT_ONLY'];
 export function createCostTransaction(projectId, transaction, override) {
   const ops = store.get(projectId);
   if (!ops) return null;
+  // Final UAT Patch B: the SAME Amount rule as a Draft edit (a finite number
+  // greater than zero), enforced here at the service boundary and stored as a
+  // number. Invalid input throws before anything is compared or written.
+  transaction = { ...transaction, amount: parseAmount(transaction?.amount) };
   const duplicate = checkDuplicateTransaction(projectId, transaction);
   if (duplicate.level === 'STRONG') {
     const validOverride = override && override.confirmed && override.reason && override.byRole === 'SUPER_ADMIN';
@@ -874,6 +882,30 @@ export function postCostTransaction(projectId, transactionId, postedBy) {
 
 // B6: normal workflow is VOID, never physical delete -- a voided
 // transaction remains fully visible for audit.
+// Final UAT Patch B: edits an unallocated DRAFT, and only the six allowlisted
+// fields (services/costTransactionEdit.js). `actor` = { role, name }. Every
+// check runs BEFORE the single write below, so a rejected edit changes nothing.
+// Status, allocation, posting and voiding are untouched: the record stays a
+// DRAFT. `duplicateCheck`/`override` are re-derived from the edited fields with
+// the same STRONG/POSSIBLE semantics as creation; updatedBy/updatedAt are the
+// audit fields of the Database Design.
+export function updateDraftCostTransaction(projectId, transactionId, patch, actor, override) {
+  const ops = store.get(projectId);
+  if (!ops) throw new Error(`Project "${projectId}" was not found.`);
+  const current = ops.costTransactions.find((t) => t.transactionId === transactionId);
+  assertDraftEditable(current, actor?.role);
+  const update = buildDraftEdit(patch);
+  const duplicate = evaluateEditDuplicate({
+    projectId,
+    candidate: { ...current, ...update },
+    others: ops.costTransactions.filter((t) => t.transactionId !== transactionId),
+    override,
+  });
+  const record = { ...current, ...update, ...duplicate, updatedAt: new Date().toISOString(), updatedBy: actor?.name ?? null };
+  ops.costTransactions = ops.costTransactions.map((t) => (t.transactionId === transactionId ? record : t));
+  return record;
+}
+
 export function voidCostTransaction(projectId, transactionId, { voidedBy, voidReason }) {
   const ops = store.get(projectId);
   if (!ops) return null;

@@ -373,6 +373,58 @@ Payment Projection tab (Export PDF)
   (change `docId`, set an arbitrary status, forge `updatedBy`/`updatedAt`).
   Rules hardening is a separate, mandatory pre-production security task.
 
+## Cost Transaction Draft editing and the Amount rule (Final UAT Patch B)
+
+* **Edit a Draft.** An unallocated `DRAFT` Cost Transaction can be edited -- and
+  only these fields: `category`, `description`, `amount`, `transactionDate`,
+  `referenceNumber`, `invoiceNumber`. Everything else (transaction identity,
+  `projectId`, `sourceRole`, `createdBy`/`createdAt`, `status`,
+  `transactionType`, `relatedTransactionId`, `projectionId`, and the
+  system-managed fields) is locked: a patch that names any of them is
+  **rejected**, never silently dropped, and the update is built field by field
+  from an allowlist. If the type or related transaction is wrong, create a new
+  Draft.
+* **Who.** The role recorded as the transaction's `sourceRole`, or Super Admin
+  (the same role-based ownership the Post and Void controls use; Security
+  Design: Update = "Creator or Super Admin -- DRAFT only"). `POSTED`, `VOID`
+  and allocated transactions are rejected; there is no delete -- cancelling a
+  posted transaction is still `VOID`. Editing never posts, voids or allocates:
+  those operations, Actual Cost and Payment Projection totals are unchanged
+  (a DRAFT never counts toward either).
+* **Amount rule, create and edit alike:** a number, finite, greater than zero.
+  Empty, zero, negative, non-numeric text, `NaN` and `Infinity` are rejected;
+  numeric text from a form is normalised explicitly and stored as a number. The
+  rule lives in one shared helper (`services/costTransactionEdit.js`) and is
+  enforced at the service boundary of both backends, not only in the form.
+  Historical records are not rewritten or re-validated.
+* **Audit.** An edit stamps `updatedAt` (ISO string) and `updatedBy` (display
+  name), per the Database Design. `duplicateCheck`/`override` are re-derived
+  from the edited fields.
+* **Duplicates on edit** use the same shared detector and the same policy as
+  creation (STRONG is blocked unless the existing Super Admin override is
+  supplied; POSSIBLE is a warning), with the edited Draft excluded from its own
+  comparison. The UI has no override control, exactly as for creation.
+* **Routing.** UI -> `costRepository` -> mock store (Local Mode) or
+  `firebase/costService` (Firebase mode). Neither mode falls back to the other.
+  In Firebase mode the service validates first (no read or write on invalid
+  input), then one Firestore transaction re-reads the document and re-checks
+  DRAFT + unallocated + ownership immediately before the single update, so a
+  Draft that was posted or allocated meanwhile is rejected, not overwritten.
+* **Limitation -- duplicate detection is client-side.** The comparison set is
+  read just before the write and is not part of the Firestore transaction: a
+  matching transaction created or posted by someone else in between is not
+  seen. It is not a race-free uniqueness guarantee and is not enforced
+  server-side. Duplicate detection when POSTING in Firebase mode is a separate,
+  unchanged item (the mock store runs a post-time reference control; the
+  Firebase service does not).
+* **Limitation -- Firestore Rules unchanged.** The `costTransactions` update
+  rule is not limited to `DRAFT`, has no editable-field allowlist (only
+  `amount`, `status`, `transactionType` and `projectionId` are frozen, and only
+  once allocated), and does not stop a role-holder rewriting `sourceRole`,
+  `createdBy` or the audit fields. A direct Firestore write can therefore bypass
+  every check above. Rules hardening is a separate, mandatory pre-production
+  security task; passing these tests is not security closure.
+
 ## Procurement & Commissioning operational input
 
 **C-01C (UAT gap closure):** UAT found Procurement's ACTUAL-entry UI existed

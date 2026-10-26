@@ -5,8 +5,9 @@ import {
 } from '@mui/material';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import {
-  getCostTransactions, createCostTransaction, checkDuplicateTransaction, postCostTransaction, voidCostTransaction,
+  getCostTransactions, createCostTransaction, updateDraftCostTransaction, checkDuplicateTransaction, postCostTransaction, voidCostTransaction,
 } from '../../../services/repositories/costRepository';
+import { parseAmount } from '../../../services/costTransactionEdit';
 import { useAuth } from '../../../context/AuthContext';
 import { ROLES } from '../../../constants/roles';
 
@@ -33,6 +34,8 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
   const [transactions, setTransactions] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
+  const [editing, setEditing] = useState(null); // transactionId of the Draft being edited, or null for "new"
+  const [formError, setFormError] = useState('');
   const [duplicate, setDuplicate] = useState({ level: null, reasons: [] });
   const [error, setError] = useState('');
   const [voidTarget, setVoidTarget] = useState(null);
@@ -47,21 +50,58 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
   // POSTED ones, since a DRAFT/VOID entry isn't a real recorded cost yet.
   const settleableTransactions = transactions.filter((t) => t.status === 'POSTED' && t.transactionType !== 'PAYMENT_ONLY');
 
+  // Final UAT Patch B: who may act on a transaction is the same predicate the
+  // Post and Void controls already use (its source role, or Super Admin). A
+  // Draft is editable only while it is an unallocated DRAFT. This is checked
+  // again inside handleSaveEdit and, authoritatively, by the repository.
+  const ownsTransaction = (t) => profile?.role === 'SUPER_ADMIN' || t.sourceRole === profile?.role;
+  const canEdit = (t) => t.status === 'DRAFT' && !t.projectionId && ownsTransaction(t);
+  const editingTx = editing ? transactions.find((t) => t.transactionId === editing) : null;
+  const categoryOptions = [...new Set([form.category, ...CATEGORIES])];
+
+  function openEdit(t) {
+    setForm({
+      category: t.category ?? 'Other',
+      description: t.description ?? '',
+      amount: String(t.amount ?? ''),
+      transactionDate: t.transactionDate ?? EMPTY.transactionDate,
+      referenceNumber: t.referenceNumber ?? '',
+      invoiceNumber: t.invoiceNumber ?? '',
+      transactionType: t.transactionType ?? 'COST',
+      relatedTransactionId: t.relatedTransactionId ?? '',
+    });
+    setEditing(t.transactionId);
+    setFormError('');
+    setOpen(true);
+  }
+
+  function closeDialog() {
+    setOpen(false);
+    setEditing(null);
+    setForm(EMPTY);
+    setFormError('');
+  }
+
   // B8: live duplicate check as the form changes, so the warning is visible
   // BEFORE the user attempts to submit -- not just as a rejection after.
   useEffect(() => {
     if (!open || !form.amount) { setDuplicate({ level: null, reasons: [] }); return; }
     let cancelled = false;
-    checkDuplicateTransaction(projectId, { ...form, amount: Number(form.amount), sourceRole: profile?.role }).then((d) => {
+    // When editing, the Draft is excluded from its own comparison set.
+    checkDuplicateTransaction(projectId, { ...form, amount: Number(form.amount), sourceRole: profile?.role }, editing ?? undefined).then((d) => {
       if (!cancelled) setDuplicate(d);
     });
     return () => { cancelled = true; };
-  }, [open, form, projectId, profile?.role]);
+  }, [open, form, projectId, profile?.role, editing]);
 
   async function handleCreate() {
-    if (!form.description.trim() || !form.amount) return;
+    if (!form.description.trim()) { setFormError('Description is required.'); return; }
+    // Final UAT Patch B: the shared Amount rule (the repository enforces it
+    // again). No more silent return on a bad amount.
+    try { parseAmount(form.amount); } catch (err) { setFormError(err.message); return; }
     if (form.transactionType === 'PAYMENT_ONLY' && !form.relatedTransactionId) return;
     setError('');
+    setFormError('');
     try {
       await createCostTransaction(projectId, {
         ...form,
@@ -70,14 +110,47 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
         createdBy: profile?.displayName ?? profile?.name ?? 'Unknown',
         relatedTransactionId: form.transactionType === 'PAYMENT_ONLY' ? form.relatedTransactionId : null,
       });
-      setForm(EMPTY);
-      setOpen(false);
+      closeDialog();
       load();
       onDataChanged?.();
     } catch (err) {
       // B9: strong duplicates are blocked by the repository, not just
-      // warned about -- this is the block taking effect.
-      setError(err.message);
+      // warned about -- this is the block taking effect. Shown inside the
+      // dialog, next to the form, instead of behind it.
+      setFormError(err.message);
+    }
+  }
+
+  // Final UAT Patch B: save an edit to an unallocated DRAFT. Only the six
+  // editable fields are sent (never the whole form or transaction). Eligibility
+  // is re-checked here against the freshly loaded record -- not just by hiding
+  // the Edit button -- and again by the repository.
+  async function handleSaveEdit() {
+    const tx = transactions.find((t) => t.transactionId === editing);
+    if (!tx || !canEdit(tx)) {
+      setFormError('This transaction can no longer be edited: it must be an unallocated DRAFT owned by your role.');
+      load();
+      return;
+    }
+    if (!form.description.trim()) { setFormError('Description is required.'); return; }
+    let amount;
+    try { amount = parseAmount(form.amount); } catch (err) { setFormError(err.message); return; }
+    setFormError('');
+    try {
+      await updateDraftCostTransaction(projectId, editing, {
+        category: form.category,
+        description: form.description,
+        amount,
+        transactionDate: form.transactionDate,
+        referenceNumber: form.referenceNumber,
+        invoiceNumber: form.invoiceNumber,
+      }, { role: profile?.role, name: profile?.displayName ?? profile?.name ?? 'Unknown' });
+      closeDialog();
+      load();
+      onDataChanged?.();
+    } catch (err) {
+      setFormError(err.message);
+      load(); // the record may have changed (posted/allocated) since it was loaded
     }
   }
 
@@ -142,6 +215,9 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
                 <td>{t.sourceRole}</td>
                 <td><Chip size="small" label={t.status} color={STATUS_COLOR[t.status]} variant="outlined" /></td>
                 <td>
+                  {canEdit(t) && (
+                    <Button size="small" onClick={() => openEdit(t)}>Edit</Button>
+                  )}
                   {t.status === 'DRAFT' && (profile?.role === 'SUPER_ADMIN' || t.sourceRole === profile?.role) && (
                     <Button size="small" onClick={() => handlePost(t.transactionId)}>Post</Button>
                   )}
@@ -158,12 +234,13 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
         </Box>
       </Paper>
 
-      <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>New Cost Transaction (DRAFT)</DialogTitle>
+      <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="sm">
+        <DialogTitle>{editing ? 'Edit Cost Transaction (DRAFT)' : 'New Cost Transaction (DRAFT)'}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
+            {formError && <Alert severity="error">{formError}</Alert>}
             <TextField select label="Category" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} fullWidth>
-              {CATEGORIES.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+              {categoryOptions.map((c) => <MenuItem key={c} value={c}>{c}</MenuItem>)}
             </TextField>
             <TextField label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} fullWidth />
             <Stack direction="row" spacing={2}>
@@ -174,8 +251,14 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
               <TextField label="Reference Number" value={form.referenceNumber} onChange={(e) => setForm((f) => ({ ...f, referenceNumber: e.target.value }))} fullWidth />
               <TextField label="Invoice Number" value={form.invoiceNumber} onChange={(e) => setForm((f) => ({ ...f, invoiceNumber: e.target.value }))} fullWidth />
             </Stack>
-            <Typography variant="caption" color="text.secondary">Source role: {profile?.role} (recorded automatically -- cannot be changed here)</Typography>
-            {isFinance && (
+            {editing ? (
+              <Typography variant="caption" color="text.secondary">
+                Transaction {editing} \u00b7 source role: {editingTx?.sourceRole}. The transaction ID, source role, type and related transaction cannot be changed -- if the type or related transaction is wrong, create a new Draft.
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary">Source role: {profile?.role} (recorded automatically -- cannot be changed here)</Typography>
+            )}
+            {isFinance && !editing && (
               <>
                 <TextField
                   select label="Transaction Type" value={form.transactionType}
@@ -216,8 +299,8 @@ export default function CostLedgerTab({ projectId, onDataChanged }) {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleCreate}>Save as Draft</Button>
+          <Button onClick={closeDialog}>Cancel</Button>
+          <Button variant="contained" onClick={editing ? handleSaveEdit : handleCreate}>{editing ? 'Save Changes' : 'Save as Draft'}</Button>
         </DialogActions>
       </Dialog>
 

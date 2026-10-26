@@ -7,6 +7,7 @@ import { getAllDocs, getOneDoc, createDoc, updateDocById } from './firestoreHelp
 import { COLLECTIONS, PROJECT_SUBCOLLECTIONS } from './firestorePaths';
 import { checkDuplicateTransaction as sharedCheckDuplicate } from '../duplicateDetection';
 import { assertValidSelection, getIneligibilityReason, isUnallocated } from '../paymentAllocation';
+import { parseAmount, buildDraftEdit, assertDraftEditable, evaluateEditDuplicate } from '../costTransactionEdit';
 import { doc, getDoc, updateDoc, runTransaction } from 'firebase/firestore';
 import { db } from './config';
 
@@ -115,9 +116,12 @@ export async function getCostTransactions(projectId) {
 
 // Same shared logic as the mock backend (services/duplicateDetection.js) --
 // only the source of "existing transactions" differs.
-export async function checkDuplicateTransaction(projectId, candidate) {
+// `excludeTransactionId` (optional, Final UAT Patch B): when a Draft is being
+// edited it must not be compared with ITSELF. Omitted, behaviour is unchanged.
+export async function checkDuplicateTransaction(projectId, candidate, excludeTransactionId) {
   const existing = await getCostTransactions(projectId);
-  return sharedCheckDuplicate(projectId, candidate, existing);
+  const others = excludeTransactionId ? existing.filter((t) => t.transactionId !== excludeTransactionId) : existing;
+  return sharedCheckDuplicate(projectId, candidate, others);
 }
 
 // FT-5→FT-8 consolidation, Section 14 (CRITICAL): a PAYMENT_ONLY
@@ -126,6 +130,10 @@ export async function checkDuplicateTransaction(projectId, candidate) {
 // backend, enforced independently here so the two backends behave
 // identically regardless of which is active.
 export async function createCostTransaction(projectId, transaction, override) {
+  // Final UAT Patch B: the SAME Amount rule as a Draft edit (a finite number
+  // greater than zero), enforced at the service boundary before ANY read or
+  // write, and stored as a number.
+  transaction = { ...transaction, amount: parseAmount(transaction?.amount) };
   const existing = await getCostTransactions(projectId);
   const duplicate = sharedCheckDuplicate(projectId, transaction, existing);
   if (duplicate.level === 'STRONG') {
@@ -158,6 +166,45 @@ export async function createCostTransaction(projectId, transaction, override) {
     duplicateCheck: duplicate.level ? duplicate : null,
     override: duplicate.level === 'STRONG' ? { ...override, at: new Date().toISOString() } : null,
   }, transactionId);
+}
+
+// Final UAT Patch B: edits an unallocated DRAFT, and only the six allowlisted
+// fields (services/costTransactionEdit.js). `actor` = { role, name }.
+//
+//   1. Input is validated first -- invalid input performs no read and no write.
+//   2. The project's transactions are read for the duplicate comparison (the
+//      edited Draft excluded from its own comparison set).
+//   3. ONE Firestore transaction re-reads the document and re-checks
+//      DRAFT + unallocated + ownership IMMEDIATELY before a single update, so
+//      a Draft that was posted or allocated while the form was open is
+//      rejected instead of overwritten.
+//
+// The duplicate comparison in step 2 is a client-side read OUTSIDE that
+// transaction: a matching transaction created or posted by someone else
+// between step 2 and the write is not seen. This is NOT a race-free
+// uniqueness guarantee and is not enforced server-side. Any Firestore error
+// propagates to the caller; there is no fallback and no default value.
+// Status, allocation, posting and voiding are untouched.
+export async function updateDraftCostTransaction(projectId, transactionId, patch, actor, override) {
+  const update = buildDraftEdit(patch);
+  const existing = await getCostTransactions(projectId);
+  const current = existing.find((t) => t.transactionId === transactionId);
+  assertDraftEditable(current, actor?.role);
+  const duplicate = evaluateEditDuplicate({
+    projectId,
+    candidate: { ...current, ...update },
+    others: existing.filter((t) => t.transactionId !== transactionId),
+    override,
+  });
+  const payload = { ...update, ...duplicate, updatedAt: new Date().toISOString(), updatedBy: actor?.name ?? null };
+  const ref = doc(db, ...txPath(projectId).split('/'), transactionId);
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists()) throw new Error('Cost Transaction was not found.');
+    assertDraftEditable({ ...snap.data(), transactionId }, actor?.role);
+    transaction.update(ref, payload);
+  });
+  return { ...current, ...payload };
 }
 
 export async function postCostTransaction(projectId, transactionId, postedBy) {

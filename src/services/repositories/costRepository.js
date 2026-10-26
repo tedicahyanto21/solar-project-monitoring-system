@@ -14,6 +14,7 @@ import {
   getCostTransactions as storeGetCostTransactions,
   checkDuplicateTransaction as storeCheckDuplicate,
   createCostTransaction as storeCreateCostTransaction,
+  updateDraftCostTransaction as storeUpdateDraftCostTransaction,
   postCostTransaction as storePostCostTransaction,
   voidCostTransaction as storeVoidCostTransaction,
 } from '../../data/mockOperationalData';
@@ -211,8 +212,11 @@ export async function buildPaymentProjectionDataset(projectId, projectionId, { n
 // B8: layered duplicate check (services/duplicateDetection.js, shared by
 // both backends), exposed so the UI can show a live warning before the
 // user even attempts to submit.
-export async function checkDuplicateTransaction(projectId, candidate) {
-  return isLocalMode ? storeCheckDuplicate(projectId, candidate) : fb.checkDuplicateTransaction(projectId, candidate);
+//
+// Final UAT Patch B: `excludeTransactionId` (optional) leaves the Draft that is
+// being edited out of its own comparison set. Omitted, behaviour is unchanged.
+export async function checkDuplicateTransaction(projectId, candidate, excludeTransactionId) {
+  return isLocalMode ? storeCheckDuplicate(projectId, candidate, excludeTransactionId) : fb.checkDuplicateTransaction(projectId, candidate, excludeTransactionId);
 }
 
 // B6/B9: creates a DRAFT transaction. Throws (with `.duplicate` detail) if
@@ -222,6 +226,20 @@ export async function checkDuplicateTransaction(projectId, candidate) {
 // backends enforce this identically.
 export async function createCostTransaction(projectId, transaction, override) {
   return isLocalMode ? storeCreateCostTransaction(projectId, transaction, override) : fb.createCostTransaction(projectId, transaction, override);
+}
+
+// Final UAT Patch B: edit an unallocated DRAFT -- only category, description,
+// amount, transactionDate, referenceNumber and invoiceNumber -- by the role in
+// the transaction's `sourceRole` or a Super Admin. `actor` = { role, name }.
+// Routing is strict: Local Mode never reaches Firebase and Firebase mode never
+// falls back to the mock store; errors from either backend reach the caller.
+// The status stays DRAFT: posting, voiding and allocation are separate,
+// unchanged operations. Throws (with `.duplicate` detail) on a STRONG duplicate
+// unless a valid Super Admin override is supplied, exactly as creation does.
+export async function updateDraftCostTransaction(projectId, transactionId, patch, actor, override) {
+  return isLocalMode
+    ? storeUpdateDraftCostTransaction(projectId, transactionId, patch, actor, override)
+    : fb.updateDraftCostTransaction(projectId, transactionId, patch, actor, override);
 }
 
 // B6: DRAFT -> POSTED. Only a POSTED transaction (that is not
